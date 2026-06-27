@@ -8,7 +8,8 @@ import {
 import L, { LatLng, LatLngBounds } from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { css } from "@emotion/react";
-import { CircleMinus, MousePointerClick } from "lucide-react";
+import { CircleMinus, MousePointerClick, Search, Loader2 } from "lucide-react";
+import { useMap } from "react-leaflet";
 
 const IconSize = css({
   width: "14px",
@@ -120,6 +121,16 @@ function RectangleSelector({
   ) : null;
 }
 
+function MapUpdater({ center }: { center: [number, number] | null }) {
+  const map = useMap();
+  useEffect(() => {
+    if (center) {
+      map.flyTo(center, 13);
+    }
+  }, [center, map]);
+  return null;
+}
+
 export function MapComponent({
   onDone,
   onRemove,
@@ -130,6 +141,35 @@ export function MapComponent({
   const [isDrag, setIsDrag] = useState(true);
   const [bounds, setBounds] = useState<LatLngBounds | null>(null);
   const [drawBounds, setDrawBounds] = useState<LatLngBounds | null>(null);
+
+  const [searchQuery, setSearchQuery] = useState("");
+  const [isSearching, setIsSearching] = useState(false);
+  const [searchCenter, setSearchCenter] = useState<[number, number] | null>(null);
+
+  const handleSearch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!searchQuery.trim()) return;
+
+    setIsSearching(true);
+    try {
+      const response = await fetch(
+        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
+          searchQuery
+        )}`
+      );
+      const data = await response.json();
+      if (data && data.length > 0) {
+        setSearchCenter([parseFloat(data[0].lat), parseFloat(data[0].lon)]);
+      } else {
+        alert("Location not found");
+      }
+    } catch (error) {
+      console.error("Search error:", error);
+      alert("Error searching location");
+    } finally {
+      setIsSearching(false);
+    }
+  };
 
   const handleClickSwitchDrag = () => {
     setIsDrag(!isDrag);
@@ -158,6 +198,56 @@ export function MapComponent({
         position: "relative",
       })}
     >
+      <form
+        onSubmit={handleSearch}
+        css={css({
+          position: "absolute",
+          zIndex: 9999,
+          left: "4rem",
+          top: "1rem",
+          display: "flex",
+          alignItems: "center",
+          gap: "0.5rem",
+          backgroundColor: "rgba(255, 255, 255, 0.9)",
+          padding: "0.5rem",
+          borderRadius: "8px",
+          boxShadow: "0 2px 4px rgba(0,0,0,0.1)",
+        })}
+      >
+        <input
+          type="text"
+          placeholder="Search location..."
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          css={css({
+            padding: "0.5rem",
+            border: "1px solid #ccc",
+            borderRadius: "4px",
+            outline: "none",
+            width: "200px",
+          })}
+        />
+        <button
+          type="submit"
+          disabled={isSearching}
+          css={css({
+            backgroundColor: "#007bffe8",
+            color: "#fff",
+            border: "none",
+            padding: "0.5rem",
+            borderRadius: "4px",
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            ":hover": { backgroundColor: "#085fbd" },
+            ":disabled": { backgroundColor: "#ccc", cursor: "not-allowed" },
+          })}
+        >
+          {isSearching ? <Loader2 css={css({ width: "14px", height: "14px", animation: "spin 1s linear infinite" })} /> : <Search css={IconSize} />}
+        </button>
+      </form>
+
       <div
         css={css({
           position: "absolute",
@@ -232,6 +322,7 @@ export function MapComponent({
           attribution='&copy; <a href="https://www.openstreetmap.org/">OpenStreetMap</a> contributors'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
+        <MapUpdater center={searchCenter} />
         <RectangleSelector
           bounds={bounds}
           drawBounds={drawBounds}
