@@ -7,6 +7,7 @@ import { useActionStore } from "@/state/exportStore";
 import { GLTFExporter } from "three/examples/jsm/Addons.js";
 import Car from "./Car";
 import instanceFleet from "@/api/axios";
+import { useRoads } from "./useRoads";
 
 const scale = 51000;
 
@@ -313,7 +314,7 @@ function Building({
 }
 
 function Roads({ area }: { area: any }) {
-  const [roads, setRoads] = useState<any[]>([]);
+  const roads = useRoads(area);
   if (!area || area.length < 2) return null;
   const refLat = (area[1].lat + area[0].lat) / 2;
   const refLng = (area[1].lng + area[0].lng) / 2;
@@ -324,23 +325,6 @@ function Roads({ area }: { area: any }) {
     return new THREE.Vector2(x, y);
   }
 
-  useEffect(() => {
-    const south = area[1].lat;
-    const west = area[1].lng;
-    const north = area[0].lat;
-    const east = area[0].lng;
-    const query = `[out:json][timeout:25];(way["highway"](${south},${west},${north},${east}););out body geom;`;
-    fetch("https://overpass-api.de/api/interpreter", {
-      method: "POST",
-      body: query,
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    })
-      .then((response) => response.json())
-      .then((data) => {
-        setRoads(data.elements);
-      })
-      .catch((err) => console.error(err));
-  }, [area]);
 
   return (
     <>
