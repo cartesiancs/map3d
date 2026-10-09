@@ -43,14 +43,30 @@ MIT License
 ## Run and verify this fork
 
 Use Node.js 24 (minimum 22.18), then `npm ci --ignore-scripts` and `npm run dev`.
-Select **Select Box**, drag a small area, and use **Next Step** to fetch buildings
-and enter the scene. **Export GLB → GLB Download** saves the model. Desktop car
-mode uses WASD; it has no mobile touch controls.
+
+### Studio workflow
+
+- Search for a city, address, or postcode and choose a result.
+- Choose **Rectangle** and click two opposite corners, or choose **Polygon**, click vertices, then click **Finish polygon**, the first vertex, or press Enter. Both tools show a live cursor preview and fixed-vertex markers; Escape cancels the draft.
+- Select an area with a bounding area below 4 km², then click **Generate 3D scene**.
+- The viewer opens immediately. Buildings, transport, landscape, and places/recreation load in four sequential batches and appear as they arrive. Batches containing enabled layers go first, with buildings first among equally visible batches. Layer rows distinguish queued, loading, waiting for an automatic retry, loaded, empty, failed, and stopped data. A failed batch does not discard other geometry or block later batches. Layers sharing a batch share its request status.
+- Failed or stopped batches can be retried from a layer row, or together with **Retry unavailable layers**, once current background loading finishes. **Stop loading layers** keeps completed batches. Updating the boundary aborts old requests and clears the old scene. A progress notice remains visible when the tools drawer is minimized.
+- Overpass requests automatically use an available server and remember the server that last succeeded. A rate limit triggers a per-server cooldown respecting `Retry-After`, with increasing waits of at least 30, 60, then 120 seconds plus jitter. If both servers are busy, a countdown communicates the automatic background retry; loaded layers remain usable. Retries are bounded by six attempts and a three-minute budget per batch. Other transient failures receive up to two attempts; invalid requests fail without retrying. Stopping loading or changing the boundary cancels pending retries. Successful responses, including empty results, are cached in memory for five minutes (up to twelve batches).
+- In 3D, the map-only search and drawing sidebar is hidden. Minimize or expand **Scene layers** without changing toggles or loading. Camera and download controls remain available in the viewer. Drag to orbit, right-drag to pan, and scroll to zoom. **Reset camera** frames the boundary. The viewer renders on demand when scene data or the camera changes, avoiding continuous rendering while idle.
+- Click a building, tree, place marker, path, or other feature to inspect its map tags. Close the inspector or click empty space to dismiss it.
+- Toggle buildings, roads, walking/cycling, transit, trees/woodland, water, waterways, green spaces, land use, points of interest, and recreation/parking. Counts show mapped features; zero counts explicitly say **No mapped data here**. Land use and POIs start hidden to keep the scene readable.
+- Turn on **Terrain** to load elevation independently. Loading and failure states are separate from the vector layers, with **Retry elevation** on failure. Turning it off restores flat ground; downloaded elevation is reused until you change the boundary.
+- **GLB** and **OBJ** in the viewer download the currently loaded, visible geometry, including enabled terrain and mapped roofs. GLB retains materials; OBJ exports geometry in metres with Y up, without material files. Downloads remain available when the layers panel is minimized.
+- **Raw data** downloads `map-data.json`: deduplicated, unmodified OSM source elements from all completed batches, including hidden layers, plus the boundary as a GeoJSON polygon, batch statuses/counts, visible-layer settings, and sampled elevation if loaded. Partial downloads identify unfinished or unavailable batches. Terrain is a sampled grid, not the original tile images.
+- **Edit boundary** or **2D map** returns to the same map position and reopens the map tools. Draw a replacement boundary and generate another scene. The existing scene stays available until a new boundary is committed.
+
+Search uses Nominatim on explicit submission. Each geometry batch uses an Overpass query scoped to the drawn polygon and bounding box, fetching OSM nodes, ways, and multipolygon relations. All four batches are requested sequentially, with at least 750 ms between uncached request starts, to avoid bursts on public map servers. Transport node queries only fetch relevant stops and stations; road and rail ways are retained. Unsupported route and site relations are excluded; queries request 25 seconds and 128 MiB of server resources. Each server attempt has a 40-second client deadline, including response decoding. Fragmented polygon rings and courtyard holes are reconstructed. Mapped building parts replace enclosing outer volumes; mapped name/address/use/colour tags are inherited from the outer building. Heights use tagged height (metres or feet), then 3 m per tagged level, then a disclosed 10 m fallback. Minimum heights and building minimum levels are respected. Flat, gabled, and pyramidal roofs are supported; gabled/pyramidal roofs use tagged roof height or levels, then a disclosed 2 m estimate. Other roof shapes remain flat and are identified in the inspector. Pyramidal roofs use a bounding-box approximation on irregular footprints. Complex building relation hierarchies are not fully reconstructed.
+
+Terrain uses public [Mapzen Terrarium tiles](https://github.com/tilezen/joerd/blob/master/docs/formats.md) from the AWS elevation-tiles-prod bucket, with [source attribution](https://github.com/tilezen/joerd/blob/master/docs/attribution.md) linked in the viewer. A 49 × 49 local elevation surface is sampled from at most nine adaptive-zoom tiles. Line networks and area surfaces are draped; buildings and markers are anchored at sampled ground elevation. Buildings use a single foundation elevation, so sloped foundations, bridge/tunnel clearance, and hydrologically level water are not modelled. The ground surface spans the boundary's bounding rectangle. Elevation resolution and mapping detail vary by location. Map tiles, search, vector geometry, and elevation require an internet connection.
 
 - `npm run build`: TypeScript checks and production bundle
-- `npm run lint`: JavaScript correctness and React hook checks (existing dependency warnings remain)
-- `npm test`: offline road-loading regression test
-- `npx playwright install chromium && npm run test:e2e`: browser smoke test with mocked map data and assets
+- `npm run lint`: JavaScript correctness and React hook checks
+- `npm test`: offline layer normalization, building height, elevation interpolation, road loading, automatic retries, cooldowns, caching, and cancellation tests
+- `npx playwright install chromium && npm run test:e2e`: browser tests covering selection, layer counts/toggles, feature inspection, visible-layer export, incremental loading with partial failures, targeted retries, automatic rate-limit recovery, cooldown cancellation, live drawing previews, map/viewer navigation, panel minimization, OBJ/raw-data downloads, mobile viewer layout, and elevation failure/retry/caching
 
-The GitHub Checks workflow runs these on pushes and pull requests. Browser tests
-use synthetic geometry; they do not verify live Overpass availability or map accuracy.
+Browser tests use synthetic geometry; they do not verify live service availability or map accuracy.

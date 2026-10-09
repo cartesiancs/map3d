@@ -3,6 +3,8 @@ import { defineConfig } from "@playwright/test";
 export default defineConfig({
   testDir: "./tests/browser",
   timeout: 60000,
+  // Allow paced background requests and software-rendered 3D to settle on CI.
+  expect: { timeout: 15000 },
   use: {
     baseURL: "http://127.0.0.1:5179",
     viewport: { width: 1280, height: 900 },

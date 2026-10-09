@@ -1,492 +1,73 @@
-import { useEffect, useState } from "react";
-import { Canvas, extend, ReactThreeFiber, useThree } from "@react-three/fiber";
-import { useAreaStore } from "@/state/areaStore";
-import { Html, Sky, Environment, Line } from "@react-three/drei";
-import * as THREE from "three";
-import { useActionStore } from "@/state/exportStore";
-import { GLTFExporter } from "three/examples/jsm/Addons.js";
-import Car from "./Car";
-import instanceFleet from "@/api/axios";
-import { useRoads } from "./useRoads";
-
-const scale = 51000;
-
-function Building({
-  shape,
-  extrudeSettings,
-  tags,
-}: {
-  shape: THREE.Shape;
-  extrudeSettings: any;
-  tags: any;
-}) {
-  const [hovered, setHovered] = useState(false);
-  const [clicked, setClicked] = useState(false);
-  const [hoverPos, setHoverPos] = useState<THREE.Vector3 | null>(null);
-  const [showTranslations, setShowTranslations] = useState(false);
-  const [showAdditionalInfo, setShowAdditionalInfo] = useState(false);
-  return (
-    <mesh
-      onPointerOver={(e) => {
-        setHovered(true);
-        e.stopPropagation();
-      }}
-      onPointerOut={(e) => {
-        setHovered(false);
-        e.stopPropagation();
-      }}
-      onPointerMove={(e) => {
-        setHoverPos(e.point.clone());
-        e.stopPropagation();
-      }}
-      onClick={(e) => {
-        setClicked(!clicked);
-        e.stopPropagation();
-      }}
-      rotation={[-Math.PI / 2, 0, 0]}
-      userData={{ exportToGLB: true }}
-    >
-      <extrudeGeometry args={[shape, extrudeSettings]} />
-      <meshStandardMaterial color={hovered || clicked ? "#007bff" : "#9da0a3"} />
-      {(hovered || clicked) && hoverPos && (
-        <Html position={[hoverPos.x, hoverPos.y + extrudeSettings.depth + 0.5, hoverPos.z]} center>
-          <div
-            role="dialog"
-            aria-label={tags.name || "Building Information"}
-            style={{
-              color: "#000000",
-              backgroundColor: "#ffffff96",
-              backdropFilter: "blur(8px)",
-              border: "none",
-              padding: "14px",
-              borderRadius: "10px",
-              fontFamily: "system-ui, -apple-system, sans-serif",
-              fontSize: "13px",
-              width: "200px",
-              boxShadow: "0 2px 14px rgba(0, 0, 0, 0.16)",
-              transition: "all 0.2s ease-in-out",
-            }}
-          >
-            <div
-              style={{
-                fontWeight: "600",
-                fontSize: "15px",
-                borderBottom: tags.name ? "1px solid rgba(0, 0, 0, 0.08)" : "none",
-                paddingBottom: tags.name ? "6px" : "0",
-                marginBottom: tags.name ? "8px" : "4px",
-              }}
-            >
-              {tags.name || "Building Information"}
-            </div>
-            {["building", "height", "building:levels", "amenity", "denomination"].map(
-              (key) =>
-                tags[key] &&
-                (key !== "building" || tags[key] !== "yes") && (
-                  <div
-                    key={key}
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      margin: "4px 0",
-                    }}
-                  >
-                    <span style={{ fontWeight: "500", color: "#5f6368" }}>
-                      {key === "building"
-                        ? "Type"
-                        : key === "height"
-                        ? "Height"
-                        : key === "building:levels"
-                        ? "Levels"
-                        : key === "amenity"
-                        ? "Facility"
-                        : key === "denomination"
-                        ? "Denomination"
-                        : key.replace(/_/g, " ")}
-                      :
-                    </span>
-                    <span style={{ textTransform: "capitalize" }}>
-                      {key === "height" ? `${tags[key]} m` : tags[key]}
-                    </span>
-                  </div>
-                )
-            )}
-            {[
-              "addr:street",
-              "addr:housenumber",
-              "addr:district",
-              "addr:city",
-              "addr:postcode",
-            ].some((key) => tags[key]) && (
-              <div
-                style={{
-                  margin: "10px 0 8px",
-                  borderTop: "1px solid rgba(0, 0, 0, 0.08)",
-                  paddingTop: "8px",
-                }}
-              >
-                <div style={{ fontWeight: "500", marginBottom: "4px", color: "#5f6368" }}>
-                  Address
-                </div>
-                <div style={{ marginLeft: "4px", fontSize: "12px", color: "#5f6368" }}>
-                  {[
-                    [tags["addr:street"], tags["addr:housenumber"]].filter(Boolean).join(" "),
-                    tags["addr:district"],
-                    tags["addr:city"],
-                    tags["addr:postcode"],
-                  ]
-                    .filter(Boolean)
-                    .join(", ")}
-                </div>
-              </div>
-            )}
-            {Object.entries(tags).filter(
-              ([key]) =>
-                ![
-                  "building",
-                  "name",
-                  "height",
-                  "building:levels",
-                  "source",
-                  "amenity",
-                  "denomination",
-                ].includes(key) &&
-                !key.startsWith("addr:") &&
-                !key.startsWith("name:") &&
-                !key.startsWith("alt_name:")
-            ).length > 0 && (
-              <div
-                style={{
-                  margin: "10px 0 4px",
-                  borderTop: "1px solid rgba(0, 0, 0, 0.08)",
-                  paddingTop: "8px",
-                }}
-              >
-                <div
-                  style={{
-                    fontWeight: "500",
-                    marginBottom: "4px",
-                    color: "#5f6368",
-                    cursor: "pointer",
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                  }}
-                  onClick={() => setShowAdditionalInfo(!showAdditionalInfo)}
-                >
-                  Additional Information
-                  <span>{showAdditionalInfo ? "▲" : "▼"}</span>
-                </div>
-                {showAdditionalInfo && (
-                  <div>
-                    {Object.entries(tags)
-                      .filter(
-                        ([key]) =>
-                          ![
-                            "building",
-                            "name",
-                            "height",
-                            "building:levels",
-                            "source",
-                            "amenity",
-                            "denomination",
-                          ].includes(key) &&
-                          !key.startsWith("addr:") &&
-                          !key.startsWith("name:") &&
-                          !key.startsWith("alt_name:")
-                      )
-                      .map(([key, value]) => {
-                        if (
-                          key === "description" ||
-                          (typeof value === "string" && value.length > 80)
-                        ) {
-                          return (
-                            <div key={key} style={{ margin: "8px 0" }}>
-                              <div
-                                style={{ fontWeight: "500", color: "#5f6368", marginBottom: "4px" }}
-                              >
-                                {key.charAt(0).toUpperCase() + key.slice(1).replace(/_/g, " ")}
-                              </div>
-                              <div
-                                style={{
-                                  textAlign: "left",
-                                  fontSize: "12px",
-                                  color: "#5f6368",
-                                  fontWeight: "400",
-                                  textWrap: "wrap",
-                                  whiteSpace: "pre-wrap",
-                                  lineHeight: "1.4",
-                                  backgroundColor: "rgba(0,0,0,0.02)",
-                                  padding: "6px 8px",
-                                  borderRadius: "4px",
-                                }}
-                              >
-                                {String(value)}
-                              </div>
-                            </div>
-                          );
-                        }
-                        return (
-                          <div
-                            key={key}
-                            style={{
-                              display: "flex",
-                              justifyContent: "space-between",
-                              margin: "4px 0",
-                            }}
-                          >
-                            <span
-                              style={{
-                                fontWeight: "700",
-                                color: "#5f6368",
-                                textAlign: "left",
-                              }}
-                            >
-                              {key.charAt(0).toUpperCase() + key.slice(1).replace(/_/g, " ")}:
-                            </span>
-                            <span
-                              style={{
-                                textTransform: "capitalize",
-                                fontWeight: "400",
-                                textAlign: "right",
-                              }}
-                            >
-                              {String(value)}
-                            </span>
-                          </div>
-                        );
-                      })}
-                  </div>
-                )}
-              </div>
-            )}
-            {Object.entries(tags).filter(([key]) => key.startsWith("name:")).length > 0 && (
-              <div
-                style={{
-                  margin: "10px 0 4px",
-                  borderTop: "1px solid rgba(0, 0, 0, 0.08)",
-                  paddingTop: "8px",
-                  textAlign: "right",
-                }}
-              >
-                <div
-                  style={{
-                    fontWeight: "500",
-                    marginBottom: "4px",
-                    color: "#5f6368",
-                    cursor: "pointer",
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                  }}
-                  onClick={() => setShowTranslations(!showTranslations)}
-                >
-                  Name Translations
-                  <span>{showTranslations ? "▲" : "▼"}</span>
-                </div>
-                {showTranslations && (
-                  <div>
-                    {Object.entries(tags)
-                      .filter(([key]) => key.startsWith("name:"))
-                      .map(([key, value]) => (
-                        <div
-                          key={key}
-                          style={{
-                            display: "flex",
-                            justifyContent: "space-between",
-                            margin: "4px 0",
-                          }}
-                        >
-                          <span style={{ fontWeight: "500", color: "#5f6368" }}>
-                            {key.replace("name:", "").toUpperCase()}:
-                          </span>
-                          <span style={{ textTransform: "capitalize" }}>{String(value)}</span>
-                        </div>
-                      ))}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </Html>
-      )}
-    </mesh>
-  );
-}
-
-function Roads({ area }: { area: any }) {
-  const roads = useRoads(area);
-  if (!area || area.length < 2) return null;
-  const refLat = (area[1].lat + area[0].lat) / 2;
-  const refLng = (area[1].lng + area[0].lng) / 2;
-
-  function project(lat: number, lng: number) {
-    const x = (lng - refLng) * scale * Math.cos((refLat * Math.PI) / 180);
-    const y = (lat - refLat) * scale;
-    return new THREE.Vector2(x, y);
-  }
-
-
-  return (
-    <>
-      {roads.map((road, index) => {
-        if (!road.geometry || road.geometry.length < 2) return null;
-
-        const points = road.geometry.map((pt: any) => {
-          const v = project(pt.lat, pt.lon);
-          return new THREE.Vector3(v.x, 0.1, -v.y);
-        });
-
-        const lineGeometry: any = new THREE.BufferGeometry().setFromPoints(points);
-
-        return (
-          <Line
-            points={points}
-            color="#34f516"
-            lineWidth={1}
-            userData={{ exportToGLB: true }}
-          ></Line>
-        );
-      })}
-    </>
-  );
-}
-
-export function Export() {
-  const { scene } = useThree();
-  const action = useActionStore((state) => state.action);
-  const fleetSpaceId = useActionStore((state) => state.fleetSpaceId);
-
-  const exportType = useActionStore((state) => state.exportType);
-
-  const setAction = useActionStore((state) => state.setAction);
-
-  useEffect(() => {
-    if (action === true) {
-      setAction(false);
-      exportGLB();
+import { Component, useEffect, useMemo, useRef, type ReactNode } from 'react';
+import { Canvas, useThree } from '@react-three/fiber';
+import { OrbitControls, Grid } from '@react-three/drei';
+import * as THREE from 'three';
+import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
+import { OBJExporter } from 'three/examples/jsm/exporters/OBJExporter.js';
+import { downloadFile } from '../data/download';
+export type ExportRequest = { id: number; format: 'glb' | 'obj' };
+import type { Point } from '../components/map/SelectMap';
+import { FeatureGeometry } from './FeatureGeometry';
+import { BatchedFeatures } from './BatchedFeatures';
+import { collectExportScene } from './exportScene';
+import type { Feature, LayerName } from '../data/layers';
+import { terrainHeight, type Terrain } from '../data/terrain';
+type Props = { features: Feature[]; points: Point[]; layers: Record<LayerName, boolean>; terrain: Terrain | null; selected: Feature | null; onSelect: (f: Feature | null) => void; reset: number; exportRequest: ExportRequest; onExport: (s: string) => void; onError: (s: string) => void; onPreparing?: (count: number) => void; children?: ReactNode };
+function TerrainMesh({ terrain, project }: { terrain: Terrain; project: (p: { lat: number; lon: number }) => THREE.Vector2 }) {
+  const geometry = useMemo(() => {
+    const { size, north, south, east, west } = terrain;
+    const positions: number[] = [], indices: number[] = [];
+    for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+      const p = { lat: north + (south - north) * y / (size - 1), lon: west + (east - west) * x / (size - 1) }, v = project(p);
+      positions.push(v.x, terrainHeight(terrain,p), -v.y);
+      if (x < size - 1 && y < size - 1) { const i = y * size + x; indices.push(i, i+size, i+1, i+1, i+size, i+size+1); }
     }
-  }, [action, setAction, scene]);
-
-  const uploadFleet = async (blob) => {
-    const formData = new FormData();
-
-    formData.append("object", blob, "box3d.glb");
-    formData.append("title", "New Object");
-    formData.append("description", "");
-    formData.append("spaceId", fleetSpaceId);
-
-    await instanceFleet.post("space/file/mesh", formData, {
-      headers: {
-        "Content-Type": "multipart/form-data",
-      },
-    });
-  };
-
-  const exportGLB = () => {
-    const exportRoot = new THREE.Group();
-    scene.traverse((child) => {
-      if (child.userData?.exportToGLB === true) {
-        exportRoot.add(child.clone(true));
-      }
-    });
-    const exporter = new GLTFExporter();
-    const options = { binary: true, embedImages: true };
-    exporter.parse(
-      exportRoot,
-      (result) => {
-        if (result instanceof ArrayBuffer) {
-          const blob = new Blob([result], { type: "model/gltf-binary" });
-
-          if (exportType == "glb") {
-            const link = document.createElement("a");
-            link.style.display = "none";
-            document.body.appendChild(link);
-            link.href = URL.createObjectURL(blob);
-            link.download = "scene.glb";
-            link.click();
-            document.body.removeChild(link);
-          }
-
-          if (exportType == "fleet") {
-            uploadFleet(blob);
-          }
-        } else {
-          console.error("GLB export failed: unexpected result", result);
-        }
-      },
-      (error) => {
-        console.error("An error occurred during export", error);
-      },
-      options
-    );
-  };
-  return null;
+    const result = new THREE.BufferGeometry(); result.setAttribute('position', new THREE.Float32BufferAttribute(positions,3)); result.setIndex(indices); result.computeVertexNormals(); return result;
+  }, [terrain, project]);
+  useEffect(() => () => geometry.dispose(), [geometry]);
+  return <mesh geometry={geometry} userData={{ exportToGLB: true }}><meshStandardMaterial color="#bdcbb2" roughness={1} side={THREE.DoubleSide}/></mesh>;
 }
-
-export function Space() {
-  const areas = useAreaStore((state) => state.areas);
-  const [realCenter, setRealCenter] = useState<any>();
-  const center = useAreaStore((state) => state.center);
-  const refLat = (center[1].lat + center[0].lat) / 2;
-  const refLng = (center[1].lng + center[0].lng) / 2;
-
-  function project(lat: number, lng: number) {
-    const x = (lng - refLng) * scale * Math.cos((refLat * Math.PI) / 180);
-    const y = (lat - refLat) * scale;
-    return new THREE.Vector2(x, y);
-  }
-
-  const areaData = () => {
-    const result: Array<{
-      shape: THREE.Shape;
-      extrudeSettings: any;
-      tags: any;
-    }> = [];
-    areas.forEach((bld: any) => {
-      if (!bld.geometry || bld.geometry.length < 3) return;
-      const shapePoints = bld.geometry.map((pt: any) => project(pt.lat, pt.lng));
-      if (!shapePoints[0].equals(shapePoints[shapePoints.length - 1]))
-        shapePoints.push(shapePoints[0]);
-      const shape = new THREE.Shape(shapePoints);
-      let heightValue = parseFloat(bld.tags.height || "");
-      const heightLevels = parseFloat(bld.tags["building:levels"] || "");
-      if (isNaN(heightValue)) heightValue = 10;
-      if (!isNaN(heightLevels)) heightValue = heightLevels * 2.2;
-      const extrudeSettings = {
-        steps: 1,
-        depth: heightValue,
-        bevelEnabled: false,
-      };
-      result.push({ shape, extrudeSettings, tags: bld.tags });
-    });
-    return result;
-  };
-
+function Scene({ reset, exportRequest, onExport, onError, distance, lastExport }: Pick<Props, 'reset' | 'exportRequest' | 'onExport' | 'onError'> & { distance: number; lastExport: { current: number } }) {
+  const { camera, scene } = useThree();
+  const controls = useRef<any>(null);
+  useEffect(() => { camera.position.set(distance * .7, distance * .8, distance * .8); camera.lookAt(0, 0, 0); if (controls.current) { controls.current.target.set(0, 0, 0); controls.current.update(); } }, [camera, reset, distance]);
   useEffect(() => {
-    setRealCenter(center);
-  }, [areas]);
-
-  const buildingsData = areaData();
-
-  return (
-    <Canvas camera={{ fov: 90, near: 0.1, far: 7000 }}>
-      <ambientLight intensity={Math.PI / 2} />
-      <spotLight position={[10, 10, 10]} angle={0.15} penumbra={1} decay={0} intensity={Math.PI} />
-      {buildingsData.map((item, index) => (
-        <Building
-          key={index}
-          shape={item.shape}
-          extrudeSettings={item.extrudeSettings}
-          tags={item.tags}
-        />
-      ))}
-
-      <Roads area={realCenter} />
-      <pointLight position={[-10, -10, -10]} decay={0} intensity={Math.PI} />
-      <Car />
-      <Export />
-      <Sky distance={450000} sunPosition={[0, 1, 0]} inclination={0} azimuth={0.25} />
-      <Environment preset="city" />
-    </Canvas>
-  );
+    if (exportRequest.id === lastExport.current) return;
+    lastExport.current = exportRequest.id;
+    const { root, dispose } = collectExportScene(scene);
+    try {
+      if (exportRequest.format === 'obj') {
+        downloadFile('scene.obj', new OBJExporter().parse(root), 'text/plain');
+        dispose(); onExport('OBJ downloaded · visible geometry saved.');
+      } else {
+        new GLTFExporter().parse(root, result => {
+          if (!(result instanceof ArrayBuffer)) { dispose(); onError('Export failed. Please retry.'); return; }
+          downloadFile('scene.glb', result, 'model/gltf-binary');
+          dispose(); onExport('GLB downloaded · visible layers saved.');
+        }, () => { dispose(); onError('Could not export the scene. Please retry.'); }, { binary: true });
+      }
+    } catch {
+      dispose(); onError('Could not export the scene. Please retry.');
+    }
+    // Only a new explicit export request triggers a download.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [exportRequest]);
+  return <OrbitControls ref={controls} makeDefault minDistance={10} maxDistance={distance * 5} maxPolarAngle={Math.PI / 2.05}/>;
+}
+class ViewerBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() { return { failed: true }; }
+  render() { return this.state.failed ? <div className="viewer-error" role="alert">The 3D viewer could not start. Check that WebGL is enabled, or return to the 2D map.</div> : this.props.children; }
+}
+export function Space(props: Props) {
+  const lastExport = useRef(props.exportRequest.id);
+  const { features, points, layers, selected, onSelect } = props;
+  const terrain = layers.Terrain ? props.terrain : null;
+  const lat = points.reduce((n,p) => n + p.lat, 0) / points.length;
+  const lng = points.reduce((n,p) => n + p.lng, 0) / points.length;
+  const project = useMemo(() => (p: Feature['geometry'][number]) => new THREE.Vector2((p.lon - lng) * 111320 * Math.cos(lat * Math.PI / 180), (p.lat - lat) * 111320), [lat, lng]);
+  const distance = Math.max(150, terrain ? (Math.max(...terrain.elevations) - terrain.baseline) * 3 : 0, ...points.map(p => project({ lat: p.lat, lon: p.lng }).length() * 2));
+  const visible = features.filter(f => layers[f.layer]);
+  const origin = useMemo(() => ({ lat, lng }), [lat, lng]);
+  return <ViewerBoundary><Canvas frameloop="demand" dpr={[1, 1.5]} gl={{ antialias: true, powerPreference: 'high-performance' }} camera={{ fov: 45, near: .5, far: 100000 }} onPointerMissed={() => onSelect(null)} fallback={<div className="viewer-error">Your browser does not support WebGL. Use the 2D map or another browser.</div>}><color attach="background" args={['#e9eee9']}/><ambientLight intensity={1.6}/><directionalLight position={[300, 600, 200]} intensity={2.3}/>{features.length > 250 ? <BatchedFeatures features={features} origin={origin} terrain={terrain} layers={layers} selected={selected} onSelect={onSelect} onPreparing={props.onPreparing} onError={props.onError}/> : visible.map(f => <FeatureGeometry key={f.key} feature={f} project={project} terrain={terrain} selected={selected?.key === f.key} onSelect={onSelect}/>)}{props.children}{terrain && <TerrainMesh terrain={terrain} project={project}/>}<Grid infiniteGrid cellSize={25} sectionSize={100} fadeDistance={distance * 3} cellColor="#c5d1c8" sectionColor="#aabcae" position={[0,-.1,0]}/><Scene {...props} distance={distance} lastExport={lastExport}/></Canvas></ViewerBoundary>;
 }
