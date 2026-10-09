@@ -38,6 +38,7 @@ export function DataGuide() {
         <section aria-labelledby="guide-coverage">
           <h3 id="guide-coverage">Reading the scene</h3>
           <p>Layers load progressively and temporary failures retry in the background. “No mapped data” means no supported features were returned, not that none exist. Unavailable or incomplete layers can leave gaps. Measurements and downloads reflect the loaded model, including its estimates.</p>
+          <p>Rhino (3DM) downloads include all loaded geometry, with nested layers and visibility settings, in metres with Z up. Buildings and surfaces are meshes; paths are editable curves. GLB and OBJ downloads include visible geometry only.</p>
         </section>
         <section aria-labelledby="guide-origin">
           <h3 id="guide-origin">Project & credits</h3>

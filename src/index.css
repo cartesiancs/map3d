@@ -147,3 +147,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible{ou
 .data-guide-warning{padding:14px 16px;background:var(--active-gradient);border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:8px}.data-guide-warning strong{font-size:13px}.data-guide-warning p{color:var(--text)}
 @media(max-width:800px){.viewport-bottom>.viewport-hint{display:none}.viewport-credits{width:100%;justify-content:space-between;gap:10px}}
 @media(max-width:600px){.data-guide-header{padding:18px 18px 14px}.data-guide-header h2{font-size:19px}.data-guide-content{padding:16px 18px 20px}.data-guide{max-height:calc(100dvh - 24px)}}
+
+/* A wrapped hint must not stretch the mobile attribution/export footer. */
+@media(max-width:800px){.viewport-bottom>span.viewport-hint{display:none}}
+.rhino-cancel{font-size:11px;align-self:flex-end;background:var(--panel)}

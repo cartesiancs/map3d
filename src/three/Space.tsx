@@ -21,18 +21,10 @@ import type { Feature, LayerName } from '../data/layers';
 import { terrainHeight, type Terrain } from '../data/terrain';
 import { lightingPresets, type SceneLighting } from './lighting';
 import { isFeatureVisible, type SublayerVisibility } from '../data/sublayers';
+import { buildTerrainGeometry } from './terrainGeometry';
 type Props = { features: Feature[]; points: Point[]; layers: Record<LayerName, boolean>; terrain: Terrain | null; selected: Feature | null; onSelect: (f: Feature | null) => void; reset: number; exportRequest: ExportRequest; onExport: (s: string) => void; onError: (s: string) => void; onPreparing?: (count: number) => void; children?: ReactNode; sceneLighting?: SceneLighting; sublayers?:SublayerVisibility };
 function TerrainMesh({ terrain, project }: { terrain: Terrain; project: (p: { lat: number; lon: number }) => THREE.Vector2 }) {
-  const geometry = useMemo(() => {
-    const { size, north, south, east, west } = terrain;
-    const positions: number[] = [], indices: number[] = [];
-    for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
-      const p = { lat: north + (south - north) * y / (size - 1), lon: west + (east - west) * x / (size - 1) }, v = project(p);
-      positions.push(v.x, terrainHeight(terrain,p), -v.y);
-      if (x < size - 1 && y < size - 1) { const i = y * size + x; indices.push(i, i+size, i+1, i+1, i+size, i+size+1); }
-    }
-    const result = new THREE.BufferGeometry(); result.setAttribute('position', new THREE.Float32BufferAttribute(positions,3)); result.setIndex(indices); result.computeVertexNormals(); return result;
-  }, [terrain, project]);
+  const geometry = useMemo(() => buildTerrainGeometry(terrain,project), [terrain, project]);
   useEffect(() => () => geometry.dispose(), [geometry]);
   return <mesh geometry={geometry} userData={{ exportToGLB: true }}><meshStandardMaterial color={sceneColors.terrain} roughness={1} side={THREE.DoubleSide}/></mesh>;
 }

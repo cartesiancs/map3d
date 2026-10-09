@@ -11,6 +11,7 @@ import { readPreference, savePreference, type Theme } from './preferences';
 import type { SceneLighting } from '../three/lighting';
 import { collectSublayers, featureSublayer, isFeatureVisible, type SublayerVisibility } from '../data/sublayers';
 import { DataGuide } from './DataGuide';
+import { useRhinoExport } from '../hooks/useRhinoExport';
 
 type Place = { place_id: number; display_name: string; lat: string; lon: string };
 const layerNames: LayerName[] = [...vectorLayers, 'Terrain'];
@@ -34,6 +35,9 @@ function App() {
   const { features, loading, started: sceneStarted, start: startLayers, clear: clearLayers } = sceneLayers;
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
+  const rhinoExport=useRhinoExport(setStatus,setError);
+  const {cancel:cancelRhinoExport}=rhinoExport;
+  useEffect(()=>{cancelRhinoExport();},[points,view,cancelRhinoExport]);
   const [selected, setSelected] = useState<Feature | null>(null);
   const [layers, setLayers] = useState<Record<LayerName, boolean>>(initialLayers);
   const [sublayers,setSublayers]=useState<SublayerVisibility>({});
@@ -147,6 +151,10 @@ function App() {
     } catch { setError('Could not download the raw data. Please retry.'); }
   };
   const canExportScene = !preparing && (features.some(feature => isFeatureVisible(feature,layers,sublayers)) || !!(layers.Terrain && terrain));
+  const downloadRhino=()=>rhinoExport.start({features,points,location,layers,sublayers,terrain,
+    layerStatus:Object.fromEntries(layerNames.map(name=>[name,name==='Terrain'?terrainState:sceneLayers.states[groupForLayer(name).id].status])),
+    incomplete:loading || failedCount>0 || stoppedCount>0 || terrainState==='loading' || terrainState==='error',
+  });
   const loadControls = <>
     {loading && <button onClick={sceneLayers.cancel}>Stop loading layers</button>}
     {!loading && (failedCount > 0 || stoppedCount > 0) && <button onClick={sceneLayers.retryFailed}>Retry unavailable layers</button>}
@@ -175,8 +183,9 @@ function App() {
             <div className="viewer-toolbar">
               <button aria-label="Reset camera" title="Reset camera" onClick={()=>setReset(value=>value+1)}><RotateCcw size={16}/></button>
               <span className="toolbar-divider"/>
-              <button aria-label="Download GLB" title="Download visible layers as GLB, including materials" disabled={!canExportScene} onClick={()=>exportScene('glb')}><Download size={15}/>GLB</button>
-              <button aria-label="Download OBJ" title="Download visible geometry as OBJ (metres, Y-up; no materials)" disabled={!canExportScene} onClick={()=>exportScene('obj')}><Download size={15}/>OBJ</button>
+              <button aria-label="Download Rhino 3DM" title="Download all loaded geometry as Rhino 7+ 3DM, including hidden layers, nested sublayers and colors (metres, Z-up)" disabled={rhinoExport.busy || (!features.length && !terrain)} onClick={downloadRhino}>{rhinoExport.busy?<LoaderCircle className="spin" size={15}/>:<Download size={15}/>}3DM</button>
+              <button aria-label="Download GLB" title="Download visible layers as GLB, including materials" disabled={rhinoExport.busy || !canExportScene} onClick={()=>exportScene('glb')}><Download size={15}/>GLB</button>
+              <button aria-label="Download OBJ" title="Download visible geometry as OBJ (metres, Y-up; no materials)" disabled={rhinoExport.busy || !canExportScene} onClick={()=>exportScene('obj')}><Download size={15}/>OBJ</button>
               <button aria-label="Download raw data (JSON)" title="Download all loaded source data, boundary, and load statuses as JSON" disabled={!Object.keys(sceneLayers.sources).length} onClick={downloadRawData}><FileJson size={15}/><span className="raw-data-label">Raw data</span></button>
             </div>
           </div>
@@ -250,6 +259,7 @@ function App() {
         </div>
         <div className="viewer-actions">
           {status && <p className="viewer-feedback" role="status">{status}</p>}
+          {rhinoExport.busy && <button className="rhino-cancel" onClick={()=>{rhinoExport.cancel();setStatus('Rhino export cancelled.');}}>Cancel Rhino export</button>}
           {error && <p className="viewer-feedback error-text" role="alert">{error}</p>}
         </div>
         {selected && <div className="inspector" role="dialog" aria-label="Feature details"><button className="close" aria-label="Close feature details" onClick={() => setSelected(null)}><X size={18}/></button><div className="eyebrow">{selected.layer === 'Buildings' ? 'BUILDING INSPECTOR' : selected.layer.toUpperCase()}</div><h2>{selected.tags.name || (selected.layer === 'Buildings' ? 'Unnamed building' : selected.tags.amenity || selected.tags.leisure || selected.tags.natural || selected.tags.landuse || selected.tags.highway || selected.layer)}</h2><p className="hint">OpenStreetMap · {selected.type}/{selected.id}</p><dl>{Object.entries(selected.tags).map(([k,v]) => <div key={k}><dt>{k.replace(/_/g, ' ')}</dt><dd>{v}</dd></div>)}</dl>{selected.layer === 'Buildings' && <><p className="hint">{!buildingDimensions(selected.tags).estimated ? 'Height from map data.' : selected.tags['building:levels'] ? 'Height estimated at 3 m per level.' : 'Height unavailable. Displayed at an estimated 10 m.'}</p>{selected.tags['building:part'] && <p className="hint">Mapped building part · elevation offset respected.</p>}{selected.tags['roof:shape'] && <p className="hint">{['gabled', 'pyramidal'].includes(selected.tags['roof:shape']) ? `Roof: ${selected.tags['roof:shape']}${buildingDimensions(selected.tags).roofEstimated ? ' · estimated 2 m roof height' : ''}.` : selected.tags['roof:shape'] === 'flat' ? 'Flat roof from map data.' : `Roof shape “${selected.tags['roof:shape']}” is not reconstructed yet; shown flat.`}</p>}</>}</div>}
