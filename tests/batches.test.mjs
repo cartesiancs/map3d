@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import * as THREE from 'three';
 import { buildBatches, featureAt, transferBuffers } from '../src/three/batches.ts';
 import { collectExportScene } from '../src/three/exportScene.ts';
+import { compareSurfaces, surfaceMaterial, surfaceOrder } from '../src/three/surfaces.ts';
 
 const point = (x, y) => ({ lon: x / 111320, lat: y / 111320 });
 const building = {
@@ -59,4 +60,21 @@ test('line batching preserves disconnected ways and point instances keep feature
   assert.deepEqual(exported.root.children[1].position.toArray(), [30,6,-40]);
   assert.ok(transferBuffers(batches).every(buffer => buffer instanceof ArrayBuffer));
   exported.dispose(); mesh.geometry.dispose(); mesh.material.dispose(); mesh.dispose();
+});
+
+test('overlapping surfaces have stable precedence and do not compete for depth', () => {
+  const area = (key, layer, size) => ({ ...building, key, layer, tags:{}, geometry:[[0,0],[size,0],[size,size],[0,size],[0,0]].map(([x,y]) => point(x,y)) });
+  const broad = area('broad', 'Green spaces', 100), detail = area('detail', 'Green spaces', 20);
+  const land = area('land', 'Land use', 200), water = area('water', 'Water', 10);
+  assert.deepEqual([water,detail,land,broad].sort(compareSurfaces).map(feature => feature.key), ['land','broad','detail','water']);
+  const features = [detail,broad];
+  const batch = buildBatches(features, {lat:0,lng:0}, null)[0];
+  assert.deepEqual(batch.ranges.map(range => range.name), ['broad','detail']);
+  assert.deepEqual(batch.ranges.map(range => range.feature), [1,0]);
+  assert.ok(surfaceOrder('Water') > surfaceOrder('Land use'));
+  const material = surfaceMaterial();
+  assert.equal(material.depthWrite, false);
+  assert.equal(material.depthTest, true);
+  assert.equal(material.polygonOffset, true);
+  assert.ok(surfaceMaterial(true).polygonOffsetUnits < material.polygonOffsetUnits);
 });

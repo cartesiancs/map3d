@@ -2,8 +2,8 @@ import * as THREE from 'three';
 import { buildingDimensions, type Feature, type GeoPoint } from '../data/layers.ts';
 import { terrainHeight, type Terrain } from '../data/terrain.ts';
 export type Projection = (p: GeoPoint) => THREE.Vector2;
-export const palette = { Buildings: '#d4ded7', Roads: '#8e9d9a', 'Walking & cycling': '#c09156', Transit: '#8766a7', 'Trees & woodland': '#518663', Water: '#8dc0cd', Waterways: '#579fad', 'Green spaces': '#83ad8a', 'Land use': '#d8c9ac', 'Points of interest': '#da8c54', 'Recreation & parking': '#b7bca2' };
-export const landColors = { residential: '#d8ccbb', commercial: '#c3bad5', retail: '#d1bdcf', industrial: '#bcc4d0', farmland: '#d1ca93', forest: '#83ad8a', cemetery: '#a8bda0' };
+import { palette, landColors, sceneColors } from './palette.ts';
+export { palette, landColors } from './palette.ts';
 export const safeColor = (value: string | undefined, fallback: string) => value && (/^#[0-9a-f]{3}([0-9a-f]{3})?$/i.test(value) || Object.prototype.hasOwnProperty.call(THREE.Color.NAMES, value.toLowerCase())) ? value : fallback;
 function makeShape(feature: Feature, project: Projection) {
   const shape = new THREE.Shape(feature.geometry.map(project));
@@ -73,7 +73,7 @@ function roofGeometry(shape: THREE.Shape, height: number, tags: Record<string, s
   const geometry = new THREE.BufferGeometry(); geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3)); geometry.computeVertexNormals(); return geometry;
 }
 export function featureColor(feature: Feature, roof = false) {
-  if (feature.layer === 'Buildings') return safeColor(feature.tags[roof ? 'roof:colour' : 'building:colour'], roof ? '#9caaa1' : palette.Buildings);
+  if (feature.layer === 'Buildings') return safeColor(feature.tags[roof ? 'roof:colour' : 'building:colour'], roof ? sceneColors.roof : palette.Buildings);
   return feature.layer === 'Land use' ? landColors[feature.tags.landuse] || palette['Land use'] : palette[feature.layer];
 }
 export function buildFeatureGeometries(feature: Feature, project: Projection, terrain: Terrain | null) {

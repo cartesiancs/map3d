@@ -1,11 +1,14 @@
+import { sceneColors } from './palette.ts';
 import * as THREE from 'three';
 import { buildingDimensions, type Feature, type VectorLayer } from '../data/layers.ts';
 import { terrainHeight, type Terrain } from '../data/terrain.ts';
 import { buildFeatureGeometries, featureColor } from './geometry.ts';
+import { compareSurfaces, isSurface } from './surfaces.ts';
+import { featureSublayer } from '../data/sublayers.ts';
 export type Origin = { lat: number; lng: number };
 export type Range = { start: number; end: number; feature: number; name: string };
 export type Batch = {
-  key: string; layer: VectorLayer; kind: 'mesh' | 'line' | 'instances';
+  key: string; layer: VectorLayer; sublayer: string; kind: 'mesh' | 'line' | 'instances';
   positions?: Float32Array; normals?: Float32Array; colors?: Uint8Array;
   matrices?: Float32Array; indices?: Uint32Array;
   form?: 'trunk' | 'crown' | 'stem' | 'marker'; color?: string;
@@ -29,18 +32,21 @@ type Part = { positions: Float32Array; normals?: Float32Array; color: THREE.Colo
 /** 500 m chunks retain frustum culling and bound the cost of click picking. */
 export function buildBatches(features: Feature[], origin: Origin, terrain: Terrain | null): Batch[] {
   const project = projection(origin);
-  const groups = new Map<string, { layer: VectorLayer; kind: 'mesh' | 'line'; parts: Part[]; vertices: number }>();
-  const points = new Map<string, { layer: VectorLayer; form: Batch['form']; color: string; data: number[]; indices: number[] }>();
-  features.forEach((feature, index) => {
+  const groups = new Map<string, { layer: VectorLayer; sublayer: string; kind: 'mesh' | 'line'; parts: Part[]; vertices: number }>();
+  const points = new Map<string, { layer: VectorLayer; sublayer: string; form: Batch['form']; color: string; data: number[]; indices: number[] }>();
+  const ordered = features.map((feature, index) => ({ feature, index }));
+  ordered.sort((a, b) => isSurface(a.feature) && isSurface(b.feature) ? compareSurfaces(a.feature, b.feature) : Number(isSurface(b.feature)) - Number(isSurface(a.feature)));
+  ordered.forEach(({feature, index}) => {
     const center = feature.geometry.reduce((p, v) => ({ lat: p.lat + v.lat / feature.geometry.length, lon: p.lon + v.lon / feature.geometry.length }), { lat: 0, lon: 0 });
     const anchor = project(center), ground = terrainHeight(terrain, center);
-    const tile = `${feature.layer}/${Math.floor(anchor.x / 500)}/${Math.floor(anchor.y / 500)}`;
+    const sublayer = featureSublayer(feature).id;
+    const tile = `${feature.layer}/${encodeURIComponent(sublayer)}/${Math.floor(anchor.x / 500)}/${Math.floor(anchor.y / 500)}`;
     if (feature.kind === 'point') {
       const tree = feature.tags.natural === 'tree';
       for (const form of (tree ? ['trunk', 'crown'] : ['stem', 'marker']) as Batch['form'][]) {
         const key = `${tile}/${form}`;
         let group = points.get(key);
-        if (!group) { group = { layer: feature.layer, form, color: form === 'trunk' ? '#8f7961' : featureColor(feature), data: [], indices: [] }; points.set(key, group); }
+        if (!group) { group = { layer: feature.layer, sublayer, form, color: form === 'trunk' ? sceneColors.trunk : featureColor(feature), data: [], indices: [] }; points.set(key, group); }
         group.data.push(anchor.x, ground + (form === 'trunk' || form === 'stem' ? 2 : form === 'crown' ? 6 : 5), -anchor.y);
         group.indices.push(index);
       }
@@ -68,7 +74,7 @@ export function buildBatches(features: Feature[], origin: Origin, terrain: Terra
       const baseKey = `${tile}/${kind}`;
       let suffix = 0, key = baseKey, group = groups.get(key);
       while (group && group.vertices + positions.length / 3 > 120000 && group.vertices > 0) { key = `${baseKey}/${++suffix}`; group = groups.get(key); }
-      if (!group) { group = { layer: feature.layer, kind, parts: [], vertices: 0 }; groups.set(key, group); }
+      if (!group) { group = { layer: feature.layer, sublayer, kind, parts: [], vertices: 0 }; groups.set(key, group); }
       group.parts.push({ positions, normals, color: new THREE.Color(featureColor(feature, partIndex > 0)), feature: index, name: feature.key + (partIndex ? '/roof' : '') });
       group.vertices += positions.length / 3;
     });
@@ -90,7 +96,7 @@ export function buildBatches(features: Feature[], origin: Origin, terrain: Terra
       ranges.push({ start: offset / 3, end: (offset + part.positions.length) / 3, feature: part.feature, name: part.name });
       offset += part.positions.length;
     }
-    result.push({ key, layer: group.layer, kind: group.kind, positions, normals, colors, ranges, bounds });
+    result.push({ key, layer: group.layer, sublayer: group.sublayer, kind: group.kind, positions, normals, colors, ranges, bounds });
   }
   for (const [key, group] of points) {
     const matrices = new Float32Array(group.indices.length * 16), bounds = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
@@ -98,7 +104,7 @@ export function buildBatches(features: Feature[], origin: Origin, terrain: Terra
       const o = i * 16; matrices[o] = matrices[o+5] = matrices[o+10] = matrices[o+15] = 1;
       for (let axis = 0; axis < 3; axis++) { const value = group.data[i*3+axis]; matrices[o+12+axis] = value; bounds[axis] = Math.min(bounds[axis], value - 5); bounds[axis+3] = Math.max(bounds[axis+3], value + 5); }
     }
-    result.push({ key, layer: group.layer, kind: 'instances', form: group.form, color: group.color, matrices, indices: new Uint32Array(group.indices), ranges: [], bounds });
+    result.push({ key, layer: group.layer, sublayer: group.sublayer, kind: 'instances', form: group.form, color: group.color, matrices, indices: new Uint32Array(group.indices), ranges: [], bounds });
   }
   return result;
 }

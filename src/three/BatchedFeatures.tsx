@@ -5,13 +5,16 @@ import { vectorLayers, type Feature, type LayerName, type VectorLayer } from '..
 import type { Terrain } from '../data/terrain';
 import { featureAt, projection, type Batch, type Origin } from './batches';
 import { FeatureGeometry } from './FeatureGeometry';
+import { surfaceMaterial, surfaceOrder } from './surfaces';
+import { isFeatureVisible, type SublayerVisibility } from '../data/sublayers';
+const allSublayers:SublayerVisibility={};
 type Prepared = { batches: Batch[]; features: Feature[] };
 export type BatchMetadata = { batch: Batch; features: Feature[] };
 function setBounds(object: THREE.BufferGeometry | THREE.InstancedMesh, bounds: number[]) {
   object.boundingBox = new THREE.Box3(new THREE.Vector3(...bounds.slice(0,3)), new THREE.Vector3(...bounds.slice(3,6)));
   object.boundingSphere = object.boundingBox.getBoundingSphere(new THREE.Sphere());
 }
-function Chunk({ batch, features, onSelect }: BatchMetadata & { onSelect: (feature: Feature) => void }) {
+function Chunk({ batch, features, onSelect, order }: BatchMetadata & { onSelect: (feature: Feature) => void; order: number }) {
   const object = useMemo(() => {
     let object: THREE.Mesh | THREE.LineSegments | THREE.InstancedMesh;
     if (batch.kind === 'instances') {
@@ -26,7 +29,7 @@ function Chunk({ batch, features, onSelect }: BatchMetadata & { onSelect: (featu
       geometry.setAttribute('color', new THREE.BufferAttribute(batch.colors!, 3, true));
       if (batch.normals) geometry.setAttribute('normal', new THREE.BufferAttribute(batch.normals, 3));
       setBounds(geometry, batch.bounds);
-      object = batch.kind === 'line' ? new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({ vertexColors: true })) : new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: .85, side: THREE.DoubleSide }));
+      object = batch.kind === 'line' ? new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({ vertexColors: true })) : new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: .85, side: THREE.DoubleSide, ...(batch.layer !== 'Buildings' ? surfaceMaterial() : {}) }));
     }
     object.name = batch.key; object.userData.mapBatch = { batch, features } satisfies BatchMetadata;
     return object;
@@ -36,9 +39,9 @@ function Chunk({ batch, features, onSelect }: BatchMetadata & { onSelect: (featu
     const index = batch.kind === 'instances' ? batch.indices?.[event.instanceId!] : featureAt(batch.ranges, batch.kind === 'line' ? event.index! : event.faceIndex! * 3);
     if (index !== undefined && features[index]) { event.stopPropagation(); onSelect(features[index]); }
   };
-  return <primitive object={object} onClick={pick}/>;
+  return <primitive object={object} renderOrder={order} onClick={pick}/>;
 }
-export function BatchedFeatures({ features, origin, terrain, layers, selected, onSelect, onPreparing, onError }: { features: Feature[]; origin: Origin; terrain: Terrain | null; layers: Record<LayerName, boolean>; selected: Feature | null; onSelect: (feature: Feature) => void; onPreparing?: (count: number) => void; onError: (message: string) => void }) {
+export function BatchedFeatures({ features, origin, terrain, layers, selected, onSelect, onPreparing, onError, sublayers=allSublayers }: { features: Feature[]; origin: Origin; terrain: Terrain | null; layers: Record<LayerName, boolean>; selected: Feature | null; onSelect: (feature: Feature) => void; onPreparing?: (count: number) => void; onError: (message: string) => void; sublayers?:SublayerVisibility }) {
   const [prepared, setPrepared] = useState<Partial<Record<VectorLayer, Prepared>>>({});
   const [pending, setPending] = useState(() => new Set(features.filter(feature => layers[feature.layer]).map(feature => feature.layer)).size);
   const worker = useRef<Worker | null>(null), serial = useRef(0);
@@ -78,10 +81,14 @@ export function BatchedFeatures({ features, origin, terrain, layers, selected, o
   }, [features, origin, terrain, layers]);
   useEffect(() => { progressCallback.current?.(pending); return () => { progressCallback.current?.(0); }; }, [pending]);
   const project = useMemo(() => projection(origin), [origin]);
-  const selectedVisible = selected && layers[selected.layer] ? selected : null;
-  return <group name="map-features" userData={{ preparing: pending, featureCount: Object.values(prepared).reduce((count, layer) => count + (layers[layer!.features[0]?.layer] ? layer!.features.length : 0), 0) }}>
-    {vectorLayers.filter(layer => layers[layer]).flatMap(layer => (prepared[layer]?.batches || []).map(batch => <Chunk key={batch.key} batch={batch} features={prepared[layer]!.features} onSelect={onSelect}/>))}
-    {selectedVisible && <FeatureGeometry feature={selectedVisible} project={project} terrain={terrain} selected onSelect={onSelect} exportable={false}/>}
+  const selectedVisible = selected && isFeatureVisible(selected,layers,sublayers) ? selected : null;
+  const visibleFeatureCount=useMemo(()=>Object.values(prepared).reduce((count, layer) => count + layer!.features.reduce((sum,feature)=>sum+Number(isFeatureVisible(feature,layers,sublayers)),0),0),[prepared,layers,sublayers]);
+  return <group name="map-features" userData={{ preparing: pending, featureCount: visibleFeatureCount }}>
+    {vectorLayers.filter(layer => layers[layer]).flatMap(layer => {
+      const batches = [...(prepared[layer]?.batches || [])].filter(batch=>sublayers[batch.sublayer]!==false).sort((a,b) => a.key.localeCompare(b.key));
+      return batches.map((batch, index) => <Chunk key={batch.key} batch={batch} features={prepared[layer]!.features} onSelect={onSelect} order={batch.kind === 'line' ? 20 : batch.kind === 'mesh' && layer !== 'Buildings' ? surfaceOrder(layer) + index / (batches.length + 1) : 10}/>);
+    })}
+    {selectedVisible?.kind === 'point' && <FeatureGeometry feature={selectedVisible} project={project} terrain={terrain} selected onSelect={onSelect} exportable={false}/>}
 
   </group>;
 }

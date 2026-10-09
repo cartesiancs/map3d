@@ -23,6 +23,7 @@ test("select area, generate scene, and download a GLB without startup errors", a
   });
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Find a location" })).toBeVisible();
+  await expect(page.locator(".leaflet-control-scale-line")).toBeVisible();
   await expect(page.getByRole("button", { name: "Generate 3D scene" })).toBeDisabled();
   await page.getByRole("button", { name: "Rectangle", exact: true }).click();
   const box = await page.locator(".leaflet-container").boundingBox();
@@ -32,6 +33,8 @@ test("select area, generate scene, and download a GLB without startup errors", a
   await page.getByRole("button", { name: "Generate 3D scene" }).click();
   await expect(page.locator(".layer-hint")).toContainText("Scene ready", {timeout:15000});
   await expect(page.getByRole("heading", { name: "Scene layers" })).toBeVisible();
+  await expect(page.getByRole("toolbar",{name:"Model navigation and measurement"})).toBeVisible();
+  await expect(page.getByRole("img",{name:"Approximate scale at camera focus depth"})).toBeVisible();
   const download = page.waitForEvent("download");
   await page.getByRole("button", { name: "Download GLB" }).click();
   expect((await download).suggestedFilename()).toBe("scene.glb");
@@ -51,7 +54,7 @@ test("failed requests preserve the boundary and offer retry", async ({ page }) =
   await expect(page.locator(".layer-entry.error")).toHaveCount(11, {timeout:15000});
   expect(attempts).toBe(8);
   await expect(page.getByRole("button", { name: "Retry Buildings", exact: true })).toBeVisible();
-  await page.getByRole("button", {name: "Edit boundary"}).click();
+  await page.getByRole("button", {name: "Back to map"}).click();
   await expect(page.getByText("Boundary selected")).toBeVisible();
 });
 
@@ -95,6 +98,63 @@ async function readGlb(download: import('@playwright/test').Download) {
   const length = file.readUInt32LE(12);
   return JSON.parse(file.subarray(20,20+length).toString());
 }
+test('themes and scene lighting are independent, persist, and share the top toolbar with exports',async({page})=>{
+  const errors:string[]=[];page.on('pageerror',error=>errors.push(error.message));
+  let requests=0;
+  await mockLayers(page);
+  await page.route('**/api/interpreter',route=>{requests++;return route.fulfill({json:{elements:richElements}});});
+  await page.emulateMedia({colorScheme:'light'});
+  await page.goto('/');
+  await page.getByRole('button',{name:'Dark theme',exact:true}).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme','dark');
+  await expect(page.locator('header')).toHaveCSS('background-color','rgb(27, 32, 58)');
+  await page.screenshot({path:'test-results/theme-dark-map.png'});
+  await selectRectangle(page);
+  const count=requests;
+  await page.evaluate(()=>{(window as any).__originalCanvas=document.querySelector('canvas');});
+  const background=async()=>{
+    const box=(await page.locator('canvas').boundingBox())!;
+    const image=await page.screenshot({clip:{x:box.x+2,y:box.y+2,width:1,height:1}});
+    return page.evaluate(async base64=>{
+      const image=new Image();image.src=`data:image/png;base64,${base64}`;await image.decode();
+      const canvas=document.createElement('canvas');canvas.width=canvas.height=1;
+      const context=canvas.getContext('2d')!;context.drawImage(image,0,0);
+      return [...context.getImageData(0,0,1,1).data].slice(0,3);
+    },image.toString('base64'));
+  };
+  await expect.poll(background).toEqual([238,237,248]);
+  await page.getByRole('button',{name:'Night lighting',exact:true}).click();
+  await expect.poll(background).toEqual([17,21,46]);
+  await expect(page.getByRole('button',{name:'Night lighting',exact:true})).toHaveAttribute('aria-pressed','true');
+  await page.screenshot({path:'test-results/theme-dark-night.png'});
+  await page.getByRole('button',{name:'Light theme',exact:true}).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme','light');
+  await expect(page.getByRole('button',{name:'Night lighting',exact:true})).toHaveAttribute('aria-pressed','true');
+  await page.getByRole('button',{name:'Day lighting',exact:true}).click();
+  await expect.poll(background).toEqual([238,237,248]);
+  await page.screenshot({path:'test-results/theme-light-day.png'});
+  expect(await page.evaluate(()=>document.querySelector('canvas')===(window as any).__originalCanvas)).toBe(true);
+  expect(requests).toBe(count);
+  for(const name of ['Download GLB','Download OBJ','Download raw data (JSON)','Day lighting','Night lighting','Dark theme']) await expect(page.locator('header').getByRole('button',{name,exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'Dark theme',exact:true}).click();
+  await page.getByRole('button',{name:'Night lighting',exact:true}).click();
+  await page.setViewportSize({width:390,height:844});
+  await page.getByRole('button',{name:'Minimize scene layers'}).click();
+  const header=(await page.locator('header').boundingBox())!;
+  for(const name of ['Download GLB','Download OBJ','Download raw data (JSON)','Night lighting','Dark theme']) {
+    const button=(await page.getByRole('button',{name,exact:true}).boundingBox())!;
+    expect(button.x).toBeGreaterThanOrEqual(0);expect(button.x+button.width).toBeLessThanOrEqual(390);
+    expect(button.y+button.height).toBeLessThanOrEqual(header.y+header.height);
+  }
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBe(390);
+  await page.screenshot({path:'test-results/theme-mobile-night.png'});
+  await page.reload();
+  await expect(page.getByRole('button',{name:'Dark theme',exact:true})).toHaveAttribute('aria-pressed','true');
+  await expect(page).toHaveURL('/viewer');
+  await expect(page.locator('.layer-hint')).toContainText('Scene ready');
+  await expect(page.getByRole('button',{name:'Night lighting',exact:true})).toHaveAttribute('aria-pressed','true');
+  expect(errors).toEqual([]);
+});
 test('all vector layers have counts, toggle in export, and do not re-export on returning to 3D', async ({page}) => {
   const errors: string[] = []; page.on('pageerror', e => errors.push(e.message));
   await mockLayers(page); await page.goto('/'); await selectRectangle(page);
@@ -117,11 +177,76 @@ test('all vector layers have counts, toggle in export, and do not re-export on r
   download = page.waitForEvent('download'); await page.getByRole('button',{name:'Download GLB'}).click();
   expect((await readGlb(await download)).nodes.map((n: {name:string}) => n.name)).toContain('way/104');
   let unexpectedDownloads = 0; page.on('download', () => unexpectedDownloads++);
-  await page.getByRole('button',{name:'2D map',exact:true}).click();
-  await page.getByRole('button',{name:'3D scene',exact:true}).click();
+  await page.getByRole('button',{name:'Back to map',exact:true}).click();
+  await page.goBack();
+  await expect(page).toHaveURL('/viewer');
   await expect(page.locator('canvas')).toBeVisible();
   await page.screenshot({path:'test-results/layers-desktop.png'});
   expect(unexpectedDownloads).toBe(0); expect(errors).toEqual([]);
+});
+test('nested road and POI types filter independently, clear selection, and preserve raw source data',async({page})=>{
+  let requests=0;
+  const extras=[
+    {type:'way',id:300,tags:{highway:'service'},geometry:[{lat:40.799,lon:-73.9503},{lat:40.801,lon:-73.9503}]},
+    {type:'way',id:301,tags:{highway:'primary'},geometry:[{lat:40.799,lon:-73.9501},{lat:40.801,lon:-73.9501}]},
+    {type:'node',id:302,tags:{amenity:'restaurant',name:'Test restaurant'},lat:40.8003,lon:-73.9498},
+    {type:'node',id:303,tags:{shop:'bakery',name:'Test bakery'},lat:40.8005,lon:-73.9498},
+  ];
+  await mockLayers(page);
+  await page.route('**/api/interpreter',route=>{requests++;return route.fulfill({json:{elements:[...richElements,...extras]}});});
+  await page.goto('/');await selectRectangle(page);const count=requests;
+  await page.getByRole('button',{name:'Show Roads sublayers',exact:true}).click();
+  const service=page.getByRole('checkbox',{name:'Roads: Service roads',exact:true});
+  await expect(service).toBeChecked();
+  await service.uncheck();
+  await expect(page.getByRole('checkbox',{name:'Roads',exact:true})).toHaveAttribute('aria-checked','mixed');
+  await expect(page.getByRole('checkbox',{name:'Roads',exact:true}).locator('..')).toContainText('2 visible');
+  let download=page.waitForEvent('download');await page.getByRole('button',{name:'Download GLB',exact:true}).click();
+  const names=(await readGlb(await download)).nodes.map((node:{name:string})=>node.name);
+  expect(names).toContain('way/103');expect(names).toContain('way/301');expect(names).not.toContain('way/300');
+  await page.getByRole('checkbox',{name:'Points of interest',exact:true}).check();
+  await page.getByRole('button',{name:'Show Points of interest sublayers',exact:true}).click();
+  await expect(page.getByRole('checkbox',{name:'Points of interest: Shops · Bakery',exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'Inspect Corner cafe',exact:true}).click();
+  await expect(page.getByRole('dialog',{name:'Feature details'})).toBeVisible();
+  await page.getByRole('checkbox',{name:'Points of interest: Cafés',exact:true}).uncheck();
+  await expect(page.getByRole('dialog',{name:'Feature details'})).toHaveCount(0);
+  await expect(page.getByRole('button',{name:'Inspect Corner cafe',exact:true})).toHaveCount(0);
+  await expect(page.getByRole('button',{name:'Inspect Test restaurant',exact:true})).toBeVisible();
+  download=page.waitForEvent('download');await page.getByRole('button',{name:'Download raw data (JSON)',exact:true}).click();
+  const {readFile}=await import('node:fs/promises');
+  const raw=JSON.parse(await readFile((await (await download).path())!,'utf8'));
+  expect(raw.elements.some((element:{id:number})=>element.id===111)).toBe(true);
+  expect(raw.scene.sublayers.find((type:{label:string;parent:string})=>type.label==='Cafés' && type.parent==='Points of interest').visible).toBe(false);
+  await page.getByRole('checkbox',{name:'Roads',exact:true}).click();
+  await expect(service).toBeChecked();
+  await page.getByRole('checkbox',{name:'Roads',exact:true}).uncheck();
+  await expect(service).toBeDisabled();
+  await page.getByRole('checkbox',{name:'Roads',exact:true}).check();
+  await expect(service).toBeChecked();
+  await expect(page.getByRole('checkbox',{name:'Roads',exact:true})).toHaveAttribute('aria-checked','true');
+  expect(requests).toBe(count);
+  await page.getByRole('button',{name:'Hide Roads sublayers',exact:true}).click();
+  await expect(service).toBeHidden();
+  await page.screenshot({path:'test-results/sublayers-desktop.png'});
+});
+test('layer drawer scrolls overflowing sublayers while keeping its heading visible',async({page})=>{
+  await mockLayers(page);await page.goto('/');await selectRectangle(page);
+  for(const size of [{width:1280,height:720},{width:390,height:844}]) {
+    await page.setViewportSize(size);
+    const list=page.getByRole('region',{name:'Scene layer list',exact:true});
+    const heading=page.locator('.layer-panel-heading');
+    await list.evaluate(element=>{element.scrollTop=0;});
+    const before=(await heading.boundingBox())!;
+    await expect.poll(()=>list.evaluate(element=>element.scrollHeight>element.clientHeight)).toBe(true);
+    await list.hover();await page.mouse.wheel(0,1200);
+    await expect.poll(()=>list.evaluate(element=>element.scrollTop)).toBeGreaterThan(0);
+    await expect(page.getByRole('checkbox',{name:'Terrain',exact:true})).toBeInViewport();
+    const after=(await heading.boundingBox())!;
+    expect(after.y).toBe(before.y);
+    await expect(page.getByRole('button',{name:'Minimize scene layers',exact:true})).toBeVisible();
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBe(size.width);
+  }
 });
 test('terrain failure has retry, success is cached, and terrain is included in GLB', async ({page}) => {
   const errors: string[] = []; page.on('pageerror', e => errors.push(e.message));
@@ -161,7 +286,7 @@ test('504 uses a backup server and repeated generation reuses the saved response
   });
   await page.goto('/'); await selectRectangle(page);
   expect(calls).toHaveLength(5); expect(calls[1]).toContain('overpass.private.coffee');
-  await page.getByRole('button',{name:'Edit boundary',exact:true}).click();
+  await page.getByRole('button',{name:'Back to map',exact:true}).click();
   await page.getByRole('button',{name:'Generate 3D scene',exact:true}).click();
   await expect(page.locator(".layer-hint")).toContainText("Scene ready", {timeout:15000});
   expect(calls).toHaveLength(5);
@@ -233,9 +358,10 @@ test('stopping background loads keeps completed features, and changing the bound
     await expect(page.getByRole('checkbox',{name:'Roads',exact:true}).locator('..')).toContainText('Stopped');
     await expect(page.getByRole('checkbox',{name:'Buildings',exact:true}).locator('..')).toContainText('1 feature');
     await expect(page.getByRole('button',{name:'Download GLB'})).toBeEnabled();
-    await page.getByRole('button',{name:'2D map',exact:true}).click();
+    await page.getByRole('button',{name:'Back to map',exact:true}).click();
     await page.getByRole('button',{name:'Clear boundary'}).click();release();
-    await expect(page.getByRole('button',{name:'3D scene',exact:true})).toBeDisabled();
+    await expect(page).toHaveURL('/map');
+    await expect(page.getByRole('button',{name:'3D scene',exact:true})).toHaveCount(0);
     await expect(page.locator('.feedback')).toContainText('Boundary cleared');
     await expect(page.getByRole('button',{name:'Generate 3D scene',exact:true})).toBeDisabled();
   }finally{release();}
@@ -316,14 +442,15 @@ test('live boundary previews, collapsible layers, and returning from 3D to draw 
   await page.screenshot({path:'test-results/viewer-minimized.png'});
   await page.getByRole('button',{name:'Expand scene layers'}).click();
   await expect(page.getByRole('checkbox',{name:'Roads',exact:true})).not.toBeChecked();
-  await page.getByRole('button',{name:'Edit boundary'}).click();
+  await page.getByRole('button',{name:'Back to map'}).click();
   await expect(page.getByRole('complementary',{name:'Map tools'})).toBeVisible();
   await expect(page.locator('.boundary-selection')).toHaveAttribute('d',original!);
   await page.getByRole('button',{name:'Polygon',exact:true}).click();
   for(const [x,y] of [[.45,.35],[.65,.35],[.55,.55]]) {const p=point(x,y);await page.mouse.click(p.x,p.y);}
   await page.getByRole('button',{name:/Finish polygon/}).click();
   await expect(page.locator('.boundary-selection')).not.toHaveAttribute('d',original!);
-  await expect(page.getByRole('button',{name:'3D scene',exact:true})).toBeDisabled();
+  await expect(page).toHaveURL('/map');
+    await expect(page.getByRole('button',{name:'3D scene',exact:true})).toHaveCount(0);
   await page.getByRole('button',{name:'Generate 3D scene'}).click();
   await expect(page.locator('.layer-hint')).toContainText('Scene ready');
 });
@@ -356,7 +483,97 @@ test('OBJ exports visible geometry and raw JSON keeps hidden source data and bou
   expect(Object.values(data.scene.batches).every((b:any)=>b.status==='ready')).toBe(true);
   await page.setViewportSize({width:390,height:844});
   await expect(page.getByRole('button',{name:'Download OBJ'})).toBeVisible();
-  await expect(page.getByRole('button',{name:'Edit boundary'})).toBeVisible();
+  await expect(page.getByRole('button',{name:'Back to map'})).toBeVisible();
   const main=await page.locator('main').boundingBox();expect(main!.width).toBe(390);
   await page.screenshot({path:'test-results/viewer-mobile.png'});
+});
+
+
+test('map and viewer routes restore history boundaries, reload, and handle an empty viewer link',async({page})=>{
+  let requests=0;
+  await mockLayers(page);
+  await page.route('**/api/interpreter',route=>{requests++;return route.fulfill({json:{elements:richElements}});});
+  await page.goto('/viewer');
+  await expect(page).toHaveURL('/map');
+  await expect(page.getByRole('button',{name:'Back to map',exact:true})).toHaveCount(0);
+  await expect(page.getByRole('button',{name:'2D map',exact:true})).toHaveCount(0);
+  await selectRectangle(page);
+  await expect(page).toHaveURL('/viewer');
+  await expect(page.getByRole('button',{name:'3D scene',exact:true})).toHaveCount(0);
+  await page.getByRole('checkbox',{name:'Roads',exact:true}).uncheck();
+  const loaded=requests;
+  await page.goBack();await expect(page).toHaveURL('/map');
+  const original=await page.locator('.boundary-selection').getAttribute('d');
+  await page.goForward();await expect(page).toHaveURL('/viewer');
+  await expect(page.getByRole('checkbox',{name:'Roads',exact:true})).not.toBeChecked();
+  expect(requests).toBe(loaded);
+  await page.getByRole('button',{name:'Back to map',exact:true}).click();
+  await expect(page).toHaveURL('/map');
+  await expect(page.locator('.boundary-selection')).toHaveAttribute('d',original!);
+  await page.getByRole('button',{name:'Clear boundary'}).click();
+  await page.getByRole('button',{name:'Polygon',exact:true}).click();
+  const box=(await page.locator('.leaflet-container').boundingBox())!;
+  for(const [x,y] of [[.3,.3],[.5,.3],[.4,.5]]) await page.mouse.click(box.x+box.width*x,box.y+box.height*y);
+  await page.getByRole('button',{name:/Finish polygon/}).click();
+  const replacement=await page.locator('.boundary-selection').getAttribute('d');
+  expect(replacement).not.toBe(original);
+  await page.getByRole('button',{name:'Generate 3D scene',exact:true}).click();
+  await expect(page.locator('.layer-hint')).toContainText('Scene ready');
+  await page.goBack();await expect(page).toHaveURL('/map');
+  await expect(page.locator('.boundary-selection')).toHaveAttribute('d',replacement!);
+  await page.goBack();await expect(page).toHaveURL('/viewer');
+  await expect(page.locator('.layer-hint')).toContainText('Scene ready');
+  const download=page.waitForEvent('download');
+  await page.getByRole('button',{name:'Download raw data (JSON)',exact:true}).click();
+  const {readFile}=await import('node:fs/promises');
+  const raw=JSON.parse(await readFile((await (await download).path())!,'utf8'));
+  expect(raw.scene.boundary.geometry.coordinates[0]).toHaveLength(5); // Earlier rectangle, not the newer triangle.
+  await page.reload();await expect(page).toHaveURL('/viewer');
+  await expect(page.locator('.layer-hint')).toContainText('Scene ready');
+  await expect(page.locator('canvas')).toBeVisible();
+  await page.getByRole('button',{name:'Back to map',exact:true}).click();
+  await expect(page.getByText('Boundary selected')).toBeVisible();
+  await page.goto('/viewer');await expect(page).toHaveURL('/viewer');
+  await expect(page.locator('.layer-hint')).toContainText('Scene ready');
+});
+
+for (const mobile of [false, true]) test(`data guide is accessible on map and viewer${mobile ? ' on mobile' : ''}`, async ({ page }) => {
+  if (mobile) await page.setViewportSize({width:390,height:844});
+  await mockLayers(page);
+  await page.goto('/map');
+  const trigger = page.getByRole('button', {name:'Data & guide',exact:true});
+  const guide = page.getByRole('dialog', {name:'From map data to 3D'});
+  await expect(trigger).toBeVisible();
+  await trigger.click();
+  await expect(guide).toBeVisible();
+  await expect(page.getByRole('button',{name:'Close data guide'})).toBeFocused();
+  await expect(guide.getByLabel('Data accuracy notice')).toContainText('Use this app and its exports at your own risk');
+  await expect(guide.getByRole('link',{name:'cartesiancs/map3d',exact:true})).toHaveAttribute('href','https://github.com/cartesiancs/map3d');
+  await page.screenshot({path:`test-results/data-guide-map${mobile ? '-mobile' : ''}.png`});
+  // Native modal dialogs make the underlying workspace inert.
+  await trigger.evaluate(button=>button.focus());
+  await expect(page.getByRole('button',{name:'Close data guide'})).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(guide.getByRole('link',{name:'OpenStreetMap',exact:true})).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(page.getByRole('button',{name:'Close data guide'})).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(guide).not.toBeVisible();
+  await expect(trigger).toBeFocused();
+  await selectRectangle(page);
+  const canvas = await page.locator('canvas').elementHandle();
+  await trigger.click();
+  await expect(guide).toBeVisible();
+  const bounds = (await guide.boundingBox())!;
+  expect(bounds.x).toBeGreaterThanOrEqual(0);
+  expect(bounds.y+bounds.height).toBeLessThanOrEqual(mobile?844:900);
+  await guide.getByRole('link',{name:'Open Database License (ODbL)'}).scrollIntoViewIfNeeded();
+  await expect(guide.getByRole('heading',{name:'Project & credits'})).toBeVisible();
+  await page.getByRole('button',{name:'Close data guide'}).click();
+  await expect(guide).not.toBeVisible();
+  await expect(page).toHaveURL(/\/viewer$/);
+  expect(await canvas?.evaluate(element=>element===document.querySelector('canvas'))).toBe(true);
+  await trigger.click();
+  await page.mouse.click(2,2);
+  await expect(guide).not.toBeVisible();
 });

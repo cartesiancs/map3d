@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { MapContainer, TileLayer, Polygon, Polyline, CircleMarker, useMap, useMapEvents } from 'react-leaflet';
+import { useEffect, useRef, useState } from 'react';
+import { MapContainer, ScaleControl, TileLayer, Polygon, Polyline, CircleMarker, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 export type Point = { lat: number; lng: number };
@@ -58,22 +58,24 @@ function Controls({ mode, points, onChange, onDrawingChange, target }: Props) {
   const preview = mode === 'rectangle'
     ? draft.length && cursor ? rectangle(draft[0], cursor) : []
     : cursor ? [...draft, cursor] : draft;
-  const previewStyle = { color: '#367c67', fillOpacity: .1, dashArray: '6 6', className: 'boundary-preview' };
+  const previewStyle = { color: '#6256e8', fillOpacity: .1, dashArray: '6 6', className: 'boundary-preview' };
   return <>
-    {points.length > 2 && <Polygon positions={points} className="boundary-selection" interactive={false} pathOptions={{ color: '#367c67', fillOpacity: draft.length ? .04 : .16, className: 'boundary-selection' }}/>}
+    {points.length > 2 && <Polygon positions={points} className="boundary-selection" interactive={false} pathOptions={{ color: '#6256e8', fillOpacity: draft.length ? .04 : .16, className: 'boundary-selection' }}/>}
     {preview.length >= 3
       ? <Polygon positions={preview} className="boundary-preview" interactive={false} pathOptions={previewStyle}/>
       : preview.length > 1 && <Polyline positions={preview} className="boundary-preview" interactive={false} pathOptions={previewStyle}/>}
-    {draft.map((point, index) => <CircleMarker key={index} center={point} radius={4} className="draft-vertex" interactive={false} pathOptions={{ color: '#367c67', fillColor: '#fff', fillOpacity: 1, weight: 2, className: 'draft-vertex' }}/>) }
+    {draft.map((point, index) => <CircleMarker key={index} center={point} radius={4} className="draft-vertex" interactive={false} pathOptions={{ color: '#6256e8', fillColor: '#fff', fillOpacity: 1, weight: 2, className: 'draft-vertex' }}/>) }
     {mode === 'polygon' && draft.length >= 3 && <div className="finish-drawing"><button onClick={e => { e.stopPropagation(); finishPolygon(); }}>Finish polygon · {draft.length} points ↵</button></div>}
   </>;
 }
 export function MapComponent(props: Props) {
+  const initialBounds = useRef(props.points.length >= 3 ? L.latLngBounds(props.points.map(p => L.latLng(p.lat, p.lng))) : undefined);
   const [tileError, setTileError] = useState(false);
   const [tilesLoading, setTilesLoading] = useState(true);
   return <>
-    <MapContainer center={[40.8, -73.95]} zoom={15} style={{ height: '100%', width: '100%' }}>
+    <MapContainer bounds={initialBounds.current} center={[40.8, -73.95]} zoom={15} style={{ height: '100%', width: '100%' }}>
       <TileLayer attribution='© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" eventHandlers={{ loading: () => { setTilesLoading(true); setTileError(false); }, load: () => setTilesLoading(false), tileerror: () => setTileError(true) }}/>
+      <ScaleControl position="bottomleft" imperial={false}/>
       <Controls {...props}/>
     </MapContainer>
     {tilesLoading && <div className="tile-warning" role="status">Loading map tiles…</div>}
