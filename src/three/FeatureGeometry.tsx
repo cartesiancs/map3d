@@ -2,6 +2,8 @@ import { useEffect, useMemo } from 'react';
 import * as THREE from 'three';
 import { Html } from '@react-three/drei';
 import { MapPin } from 'lucide-react';
+import { useThree } from '@react-three/fiber';
+import type { MapMarker } from './MarkerOcclusion';
 import { buildingDimensions, type Feature, type GeoPoint } from '../data/layers';
 import { terrainHeight, type Terrain } from '../data/terrain';
 import { buildFeatureGeometries, featureColor } from './geometry';
@@ -9,6 +11,8 @@ import type { Projection } from './geometry';
 import { isSurface, surfaceMaterial, surfaceOrder } from './surfaces';
 import { sceneColors } from './palette';
 export function FeatureGeometry({ feature, project, terrain, selected, onSelect, exportable = true, surfaceStackOrder }: { feature: Feature; project: Projection; terrain: Terrain | null; selected: boolean; onSelect: (f: Feature) => void; exportable?: boolean; surfaceStackOrder?: number }) {
+  const invalidate = useThree(state => state.invalidate);
+  const marker = useMemo<MapMarker>(() => ({ element: null }), []);
   const building = feature.layer === 'Buildings';
   const surface = isSurface(feature);
   const renderOrder = selected ? 30 : surface ? surfaceStackOrder ?? surfaceOrder(feature.layer) : 10;
@@ -24,7 +28,7 @@ export function FeatureGeometry({ feature, project, terrain, selected, onSelect,
   if (feature.kind === 'point') {
     const tree = feature.tags.natural === 'tree';
     return <group position={[anchor.x, ground, -anchor.y]}>
-      {!tree && <Html center position={[0,7,0]} zIndexRange={[4,0]}><button className="feature-marker" style={{ color }} aria-label={`Inspect ${feature.tags.name || feature.tags.amenity || feature.tags.railway || feature.tags.public_transport || feature.layer}`} title={feature.tags.name || feature.layer} onClick={e => { e.stopPropagation(); onSelect(feature); }}><MapPin size={14}/></button></Html>}
+      {!tree && <group position={[0,8,0]} userData={{ mapMarker: marker }}><Html center zIndexRange={[4,0]}><button ref={element => { marker.element = element; if (element) invalidate(); }} className="feature-marker" style={{ color, display: 'none' }} aria-label={`Inspect ${feature.tags.name || feature.tags.amenity || feature.tags.railway || feature.tags.public_transport || feature.layer}`} title={feature.tags.name || feature.layer} onClick={e => { e.stopPropagation(); onSelect(feature); }}><MapPin size={14}/></button></Html></group>}
       {tree ? <><mesh position={[0,2,0]} onClick={pick} userData={{ exportToGLB: exportable }}><cylinderGeometry args={[.35,.5,4,6]}/><meshStandardMaterial color={sceneColors.trunk}/></mesh><mesh position={[0,6,0]} onClick={pick} userData={{ exportToGLB: exportable }}><icosahedronGeometry args={[3.5,0]}/><meshStandardMaterial color={color} emissive={selected ? sceneColors.selectedPoint : '#000000'} emissiveIntensity={selected ? .35 : 0}/></mesh></> : <><mesh position={[0,2,0]} onClick={pick} userData={{ exportToGLB: exportable }}><cylinderGeometry args={[.4,.4,4,6]}/><meshStandardMaterial color={color} emissive={selected ? sceneColors.selectedPoint : '#000000'} emissiveIntensity={selected ? .35 : 0}/></mesh><mesh position={[0,5,0]} onClick={pick} userData={{ exportToGLB: exportable }}><sphereGeometry args={[2.5,8,6]}/><meshStandardMaterial color={color} emissive={selected ? sceneColors.selectedPoint : '#000000'} emissiveIntensity={selected ? .35 : 0}/></mesh></>}
     </group>;
   }
