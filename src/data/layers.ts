@@ -134,12 +134,13 @@ export const layerGroups = [
 ] as const;
 export type GroupId = typeof layerGroups[number]['id'];
 export const groupForLayer = (name: VectorLayer) => layerGroups.find(g => (g.layers as readonly string[]).includes(name))!;
-export function geometryQuery(points: { lat: number; lng: number }[], group?: GroupId) {
+export function geometryQuery(points: { lat: number; lng: number }[], group?: GroupId, selectorIndex?: number) {
   const polygon = points.map(p => `${p.lat} ${p.lng}`).join(' ');
   const selectors = layerGroups.filter(g => !group || g.id === group).flatMap(g => [...g.selectors]);
+  const chosen = selectorIndex === undefined ? selectors : selectors.slice(selectorIndex, selectorIndex + 1);
   const bbox = [Math.min(...points.map(p => p.lat)), Math.min(...points.map(p => p.lng)), Math.max(...points.map(p => p.lat)), Math.max(...points.map(p => p.lng))].join(',');
   // Restrict relations to polygons; route/site relations may span entire regions.
-  const selection = selectors.map(s => {
+  const selection = chosen.map(s => {
     const nodeSelector = s === '["highway"]' ? '["highway"="bus_stop"]' : s === '["railway"]' ? '["railway"~"^(station|halt|tram_stop|subway_entrance)$"]' : s;
     return `node${nodeSelector}(poly:"${polygon}");way${s}(poly:"${polygon}");relation["type"="multipolygon"]${s}(poly:"${polygon}");`;
   }).join('');

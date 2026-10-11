@@ -135,3 +135,46 @@ test('returning after the freshness window revalidates sources and refreshes cal
   await expect(page.getByText('All source batches loaded',{exact:true})).toBeVisible();
   expect(requests).toBe(8);
 });
+
+test('failed building batch yields to other layers and automatically recovers through smaller requests',async({page})=>{
+  await page.addInitScript(points=>sessionStorage.setItem('map3d.workspace',JSON.stringify({points,location:'Athens'})),boundary(37.98,23.72));
+  await page.route('**/*.tile.openstreetmap.org/**',route=>route.fulfill({status:204,body:''}));
+  await page.route('**/reverse?**',route=>route.fulfill({json:{address:{city:'Athens'}}}));
+  const queries:string[]=[];
+  await page.route('**/api/interpreter',route=>{
+    const q=route.request().postData() || '';queries.push(q);
+    if(q.includes('"building"')&&q.includes('"building:part"'))return route.fulfill({status:503,json:{error:'Query timed out',retryScope:'query',canSplit:true}});
+    return route.fulfill({json:{elements:q.includes('"building"')?siteElements(37.9803,23.7203,'12',1).slice(0,1):[]}});
+  });
+  await page.goto('/viewer');
+  await expect(page.getByRole('checkbox',{name:'Water',exact:true}).locator('..')).toContainText('No mapped data here');
+  await expect(page.locator('.layer-hint')).toContainText('Scene ready',{timeout:25000});
+  await expect(page.getByRole('checkbox',{name:'Buildings',exact:true}).locator('..')).toContainText('1 feature');
+  expect(queries[1]).toContain('highway');
+  expect(queries.filter(q=>q.includes('"building"')&&q.includes('"building:part"'))).toHaveLength(2);
+  expect(queries.some(q=>q.includes('"building"')&&!q.includes('"building:part"'))).toBe(true);
+});
+
+test('refresh with unfinished queries then switch boundary ignores old responses and retry state',async({page})=>{
+  await page.addInitScript(points=>{if(!sessionStorage.getItem('map3d.workspace'))sessionStorage.setItem('map3d.workspace',JSON.stringify({points,location:'Athens'}));},boundary(37.98,23.72));
+  await page.route('**/*.tile.openstreetmap.org/**',route=>route.fulfill({status:204,body:''}));
+  await page.route('**/reverse?**',route=>route.fulfill({json:{address:{city:route.request().url().includes('lat=37.')?'Athens':'New York'}}}));
+  let release=()=>{},oldCalls=0,newCalls=0;
+  const oldGate=new Promise<void>(resolve=>release=resolve);
+  await page.route('**/api/interpreter',async route=>{
+    const old=(route.request().postData() || '').includes('37.98');
+    if(old){oldCalls++;await oldGate;await route.fulfill({status:429,headers:{'Retry-After':'900'},body:'Old request throttled'}).catch(()=>{});}
+    else {newCalls++;await route.fulfill({json:{elements:siteElements(40.7803,-73.9697,'120',100).slice(0,1)}});}
+  });
+  await page.goto('/viewer');await expect.poll(()=>oldCalls).toBe(1);
+  await page.reload();await expect.poll(()=>oldCalls).toBe(2);
+  await page.getByRole('button',{name:'Back to map',exact:true}).click();
+  await page.evaluate(points=>{history.pushState({map3d:{points,location:'New York'}},'', '/map');dispatchEvent(new PopStateEvent('popstate'));},boundary(40.78,-73.97));
+  release();
+  await page.getByRole('button',{name:'Generate 3D scene',exact:true}).click();
+  await expect(page.locator('.layer-hint')).toContainText('Scene ready');
+  expect(newCalls).toBe(4);expect(oldCalls).toBe(2);
+  await page.getByRole('button',{name:'Site dashboard',exact:true}).click();
+  await expect(page.locator('.site-kicker')).toContainText('New York');
+  await expect(page.locator('.site-stat').filter({hasText:'Mean building height'})).toContainText('120m');
+});

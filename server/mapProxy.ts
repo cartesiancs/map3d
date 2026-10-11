@@ -15,55 +15,69 @@ export function validSceneQuery(query: string) {
   const coordinates = polygon.split(/\s+/).map(Number);
   if (coordinates.length < 6 || coordinates.length % 2 || coordinates.some((n, i) => !Number.isFinite(n) || Math.abs(n) > (i % 2 ? 180 : 90))) return false;
   const points = Array.from({ length: coordinates.length / 2 }, (_, i) => ({ lat: coordinates[i * 2], lng: coordinates[i * 2 + 1] }));
-  return [...layerGroups.map(group => group.id), undefined].some(group => geometryQuery(points, group) === query);
+  return geometryQuery(points) === query || layerGroups.some(group => geometryQuery(points, group.id) === query || group.selectors.some((_, index) => geometryQuery(points, group.id, index) === query));
 }
 
 export function createMapProxy(options: Options = {}) {
   const fetchData = options.fetch || ((...args: Parameters<typeof fetch>) => globalThis.fetch(...args)), now = options.now || Date.now;
   const wait = options.wait || ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)));
   const servers = endpoints.map(url => ({ url, notBefore: 0, failures: 0 }));
-  const pending = new Map<string, Promise<Response>>();
+  const pending = new Map<string, {controller:AbortController; task:Promise<Response>; users:number}>();
   let preferred = 0, nextRequestAt = 0;
-  async function load(query: string, cacheKey: Request, cache?: Cache) {
-    const failures: { server: string; status: number | string }[] = [];
+  async function load(query: string, cacheKey: Request, signal:AbortSignal, cache?: Cache) {
+    const failures: { server: string; status: number | string; detail?:string }[] = [];
     for (const index of [preferred, 1 - preferred]) {
+      signal.throwIfAborted();
       const server = servers[index];
       if (server.notBefore > now()) continue;
       const start = Math.max(nextRequestAt, now()); nextRequestAt = start + 750;
       if (start > now()) await wait(start - now());
+      signal.throwIfAborted();
       const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 35000);
+      const cancel=()=>controller.abort(signal.reason);
+      signal.addEventListener('abort',cancel,{once:true});
       try {
         // Browsers cannot reliably set an app User-Agent. Do not forward their Origin
         // or Referer: identify this service explicitly and use standard form encoding.
         const response = await fetchData(server.url, { method: 'POST', headers: { 'User-Agent': agent, Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }, body: new URLSearchParams({ data: query }).toString(), signal: controller.signal, redirect: 'manual' });
+        signal.throwIfAborted();
         if (!response.ok) {
-          failures.push({ server: new URL(server.url).hostname, status: response.status });
+          const detail=(await response.text()).replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim().slice(0,300);
+          signal.throwIfAborted();
+          failures.push({ server: new URL(server.url).hostname, status: response.status, detail });
           if (response.status === 400) return json({ error: 'The map server rejected this query (HTTP 400).' }, 400);
           const retry = response.headers.get('Retry-After'), seconds = Number(retry);
           const retryMs = retry ? Number.isFinite(seconds) ? seconds * 1000 : Math.max(0, Date.parse(retry) - now()) || 0 : 0;
-          server.failures++;
-          server.notBefore = now() + Math.max(retryMs, [406, 429].includes(response.status) ? 30000 : Math.min(30000, 2000 * 2 ** (server.failures - 1)));
+          if ([406,429].includes(response.status)) server.failures++;
+          // A query-specific 500 must not build a long penalty for unrelated sites.
+          server.notBefore = now() + Math.max(retryMs, [406,429].includes(response.status) ? Math.min(120000,30000*2**Math.max(0,server.failures-1)) : 2000);
           continue;
         }
         const data = await response.json() as { elements?: unknown[]; remark?: string } | null;
-        if (!data || !Array.isArray(data.elements) || data.remark) throw Error('incomplete response');
+        signal.throwIfAborted();
+        if (!data || !Array.isArray(data.elements) || data.remark) throw Error(data?.remark?.slice(0,300) || 'incomplete response');
         preferred = index; server.notBefore = 0; server.failures = 0;
         const result = json(data, 200, { 'Cache-Control': 'public, max-age=900', 'X-Map-Cache': 'MISS', 'X-Map-Source': new URL(server.url).hostname });
         if (cache) { try { await cache.put(cacheKey, result.clone()); } catch { /* A cache failure must not discard valid map data. */ } }
         return result;
       } catch (error) {
+        signal.throwIfAborted();
         console.error('Map-data upstream failure', new URL(server.url).hostname, error instanceof Error ? error.message : 'Unknown error');
-        failures.push({ server: new URL(server.url).hostname, status: controller.signal.aborted ? 'timeout' : error instanceof Error && error.message === 'incomplete response' ? 'incomplete response' : 'network error' });
-        server.failures++; server.notBefore = now() + Math.min(30000, 2000 * 2 ** (server.failures - 1));
-      } finally { clearTimeout(timer); }
+        failures.push({ server: new URL(server.url).hostname, status: controller.signal.aborted ? 'timeout' : 'incomplete response', detail:error instanceof Error?error.message.slice(0,300):'Unknown failure' });
+        server.notBefore = now() + 2000;
+      } finally { clearTimeout(timer); signal.removeEventListener('abort',cancel); }
     }
+    signal.throwIfAborted();
     preferred = 1 - preferred;
     const seconds = Math.max(2, Math.ceil((Math.min(...servers.map(server => server.notBefore)) - now()) / 1000));
     const detail = failures.map(failure => `${failure.server}: ${typeof failure.status === 'number' ? 'HTTP ' : ''}${failure.status}`).join('; ');
-    return json({ error: detail ? `Map-data services could not complete this request (${detail}).` : 'Map-data services are cooling down before the next automatic retry.', failures }, 503, { 'Retry-After': String(seconds) });
+    const canSplit=failures.some(failure=>[408,500,502,504,'timeout','incomplete response'].includes(failure.status));
+    return json({ retryScope: canSplit ? 'query' : 'service', canSplit, error: detail ? `Map-data services could not complete this request (${detail}).` : 'Map-data services are cooling down before the next automatic retry.', failures }, 503, { 'Retry-After': String(seconds) });
   }
   return async function handle(request: Request) {
     const url = new URL(request.url);
+    // Older Pages runtimes may not expose incoming disconnect signals.
+    const signal=request.signal || new AbortController().signal;
     const origin = request.headers.get('Origin');
     if (origin && origin !== url.origin) return json({ error: 'This endpoint accepts requests from this app only.' }, 403);
     if (request.method !== 'POST') return json({ error: 'Use POST to load map geometry.' }, 405, { Allow: 'POST' });
@@ -80,10 +94,27 @@ export function createMapProxy(options: Options = {}) {
         if (cached) { const result = new Response(cached.body, cached); result.headers.set('X-Map-Cache', 'HIT'); return result; }
       } catch { /* Loading still works when the cache is unavailable. */ }
     }
-    let task = pending.get(query);
-    if (!task) { task = load(query, cacheKey, cache); pending.set(query, task); }
-    try { return (await task).clone(); }
-    finally { if (pending.get(query) === task) pending.delete(query); }
+    signal.throwIfAborted();
+    let entry = pending.get(query);
+    if (!entry || entry.controller.signal.aborted) {
+      const controller=new AbortController();
+      entry={controller,task:load(query,cacheKey,controller.signal,cache),users:0};
+      pending.set(query,entry);
+      const own=entry;
+      void entry.task.finally(()=>{if(pending.get(query)===own) pending.delete(query);}).catch(()=>{});
+    }
+    entry.users++;
+    const own=entry;
+    let released=false;
+    const release=()=>{
+      if(released)return;released=true;own.users--;
+      if(own.users===0){own.controller.abort();if(pending.get(query)===own)pending.delete(query);}
+    };
+    let cancel=()=>{};
+    const aborted=new Promise<never>((_,reject)=>{cancel=()=>{release();reject(signal.reason);};signal.addEventListener('abort',cancel,{once:true});});
+    try { return (await Promise.race([own.task,aborted])).clone(); }
+    finally { signal.removeEventListener('abort',cancel); release(); }
+
   };
 }
 

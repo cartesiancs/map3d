@@ -81,3 +81,39 @@ test('advanced-mode worker preserves static assets and SPA routing',async()=>{
   const res=await worker.fetch(new Request('https://app.example/viewer'),{ASSETS:{fetch:async req=>new Response(new URL(req.url).pathname)}});
   assert.equal(await res.text(),'/viewer');
 });
+
+test('smaller selector queries are whitelisted but altered selectors are rejected',()=>{
+  for(const group of layerGroups) for(let i=0;i<group.selectors.length;i++)assert.ok(validSceneQuery(geometryQuery(points,group.id,i)));
+  assert.equal(validSceneQuery(query.replace('["building"]','["secret"]')),false);
+});
+test('last disconnected caller cancels upstream and does not poison the next boundary',async()=>{
+  let oldSignal,finish,calls=0;const controller=new AbortController();
+  const handle=createMapProxy({wait:async()=>{},fetch:async(_url,init)=>{calls++;if(calls===1){oldSignal=init.signal;return new Promise(resolve=>finish=resolve);}return success();}});
+  const old=handle(new Request('https://app.example/api/interpreter',{method:'POST',body:query,signal:controller.signal}));
+  const rejected=assert.rejects(old,{name:'AbortError'});
+  while(!finish)await new Promise(resolve=>setImmediate(resolve));
+  controller.abort();await rejected;assert.equal(oldSignal.aborted,true);
+  finish(new Response('Late failure',{status:429,headers:{'Retry-After':'900'}}));
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal((await handle(request(geometryQuery(points,'transport')))).status,200);assert.equal(calls,2);
+});
+test('cancelling one subscriber preserves an identical query for another caller',async()=>{
+  let finish,upstream;const aController=new AbortController();
+  const h=harness((_url,init)=>{upstream=init.signal;return new Promise(resolve=>finish=resolve);});
+  const a=h.handle(new Request('https://app.example/api/interpreter',{method:'POST',body:query,signal:aController.signal}));
+  const rejection=assert.rejects(a,{name:'AbortError'});
+  const b=h.handle(request());
+  while(!finish)await new Promise(resolve=>setImmediate(resolve));
+  await new Promise(resolve=>setImmediate(resolve));aController.abort();await rejection;
+  assert.equal(upstream.aborted,false);finish(success());assert.equal((await b).status,200);assert.equal(h.calls.length,1);
+});
+test('query failures carry bounded diagnostics without a long inherited service cooldown',async()=>{
+  const h=harness(()=>new Response('<p>runtime error: Query timed out</p>',{status:500}));
+  const response=await h.handle(request());const body=await response.json();
+  assert.equal(body.retryScope,'query');assert.equal(body.canSplit,true);assert.match(body.failures[0].detail,/Query timed out/);assert.ok(!body.failures[0].detail.includes('<'));
+  h.advance(3000);await h.handle(request(geometryQuery(points,'transport')));assert.equal(h.calls.length,4);
+});
+test('older runtimes without incoming disconnect signals still load geometry',async()=>{
+  const req=request();Object.defineProperty(req,'signal',{value:undefined});
+  assert.equal((await harness(success).handle(req)).status,200);
+});

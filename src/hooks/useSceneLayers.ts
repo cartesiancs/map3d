@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { geometryQuery, layerGroups, normalizeFeatures, type Feature, type GroupId, type OsmElement } from '../data/layers';
-import { requestGeometry } from '../data/overpass';
+import { layerGroups, normalizeFeatures, type Feature, type GroupId, type OsmElement } from '../data/layers';
+import { loadSceneQueries, mergeElements, type QueryState } from '../data/queryScheduler';
 
-type State = { status: 'idle' | 'queued' | 'loading' | 'waiting' | 'ready' | 'error' | 'cancelled'; message?: string };
+type State = QueryState;
 const initialStates = () => Object.fromEntries(layerGroups.map(g => [g.id, { status: 'idle' }])) as Record<GroupId, State>;
 type Points = { lat: number; lng: number }[];
 type SceneData = { points: Points; states: Record<GroupId, State>; sources: Partial<Record<GroupId, OsmElement[]>>; started: boolean };
@@ -18,6 +18,12 @@ export function useSceneLayers(points: { lat: number; lng: number }[]) {
   const completed = useRef({points, at: 0});
   const currentData = useRef(data); currentData.current = data.points === points ? data : emptyData(points);
   useEffect(() => () => request.current?.abort(), [points]);
+  useEffect(() => {
+    const stop=()=>request.current?.abort();
+    const resume=(event:PageTransitionEvent)=>{if(event.persisted) setData(emptyData(currentPoints.current));};
+    window.addEventListener('pagehide',stop);window.addEventListener('pageshow',resume);
+    return ()=>{window.removeEventListener('pagehide',stop);window.removeEventListener('pageshow',resume);};
+  }, []);
   const clear = useCallback(() => {
     request.current?.abort(); request.current = null;
     setData(emptyData(currentPoints.current));
@@ -29,22 +35,15 @@ export function useSceneLayers(points: { lat: number; lng: number }[]) {
     const update = (change: (previous: SceneData) => SceneData) => setData(previous => active() ? change(previous.points === points ? previous : emptyData(points)) : previous);
     update(previous => ({ ...(reset ? emptyData(points) : previous), started: true,
       states: { ...(reset ? idleStates : previous.states), ...Object.fromEntries(groups.map(id => [id, {status:'queued'}])) } }));
-    // Keep public map-server requests sequential. Each batch appears immediately;
-    // a failing batch cannot discard geometry received from the other batches.
-    for (const id of groups) {
-      if (!active()) break;
-      update(previous => ({ ...previous, states: { ...previous.states, [id]: { status: 'loading', message: 'Loading…' } } }));
-      try {
-        const elements = await requestGeometry(geometryQuery(points, id), controller.signal, (message, progress) => {
-          update(previous => ({ ...previous, states: { ...previous.states, [id]: { status: progress?.phase === 'waiting' ? 'waiting' : 'loading', message: progress?.phase === 'waiting' ? message : message.includes('backup') ? 'Loading from backup…' : 'Loading…' } } }));
-        });
-        if (!active()) break;
-        update(previous => ({ ...previous, sources: { ...previous.sources, [id]: elements }, states: { ...previous.states, [id]: {status:'ready'} } }));
-      } catch (error) {
-        if (!active()) break;
-        const message = error instanceof Error ? error.message : 'This layer could not load. Please retry.';
-        update(previous => ({ ...previous, states: { ...previous.states, [id]: { status: 'error', message } } }));
-      }
+    try {
+      await loadSceneQueries(points, groups, controller.signal, {onGroup:(id,state,elements)=>{
+        update(previous=>({...previous,
+          states:{...previous.states,[id]:state},
+          sources:elements ? {...previous.sources,[id]:state.status==='ready' ? elements : mergeElements([...(previous.sources[id] || []),...elements])} : previous.sources,
+        }));
+      }});
+    } catch(error) {
+      if(active()) update(previous=>({...previous,states:Object.fromEntries(Object.entries(previous.states).map(([id,state])=>[id,['queued','loading','waiting'].includes(state.status)?{status:'error',message:error instanceof Error?error.message:'Loading interrupted. Please retry.'}:state])) as Record<GroupId,State>}));
     }
     if (active()) completed.current = {points, at: Date.now()};
   }, [points]);

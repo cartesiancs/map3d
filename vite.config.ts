@@ -7,14 +7,18 @@ import { createMapProxy } from './server/mapProxy';
 function configureMapServer(server: ViteDevServer | PreviewServer) {
   const handle = createMapProxy();
   server.middlewares.use('/api/interpreter', async (req, res) => {
+    const controller=new AbortController();
+    const disconnect=()=>{if(!res.writableEnded)controller.abort();};
+    res.on('close',disconnect);
     try {
       const chunks: Buffer[] = []; let size = 0;
       for await (const chunk of req) { size += chunk.length; if (size > 65536) { res.writeHead(413).end('Boundary outline is too large.'); return; } chunks.push(chunk); }
       const origin = `http://${req.headers.host}`;
-      const request = new Request(`${origin}/api/interpreter`, { method: req.method, headers: { ...(req.headers.origin ? { Origin: req.headers.origin } : {}) }, ...(req.method === 'POST' ? { body: Buffer.concat(chunks).toString() } : {}) });
+      const request = new Request(`${origin}/api/interpreter`, { signal:controller.signal, method: req.method, headers: { ...(req.headers.origin ? { Origin: req.headers.origin } : {}) }, ...(req.method === 'POST' ? { body: Buffer.concat(chunks).toString() } : {}) });
       const response = await handle(request);
       res.writeHead(response.status, Object.fromEntries(response.headers)); res.end(Buffer.from(await response.arrayBuffer()));
-    } catch { res.writeHead(502, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: 'The local map-data service could not finish this request.' })); }
+    } catch { if(!res.destroyed) res.writeHead(502, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: 'The local map-data service could not finish this request.' })); }
+    finally {res.off('close',disconnect);}
   });
 }
 

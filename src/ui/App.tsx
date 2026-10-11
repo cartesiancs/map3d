@@ -127,7 +127,11 @@ function App() {
   const failedCount = vectorLayers.filter(name => sceneLayers.states[groupForLayer(name).id].status === 'error').length;
   const stoppedCount = vectorLayers.filter(name => sceneLayers.states[groupForLayer(name).id].status === 'cancelled').length;
   const pendingCount = vectorLayers.filter(name => ['loading', 'queued', 'waiting'].includes(sceneLayers.states[groupForLayer(name).id].status)).length;
-  const dataMessage = !sceneStarted ? 'Preparing scene…' : loading ? `${features.length ? `${features.length} ${features.length === 1 ? 'feature' : 'features'} loaded · ` : ''}${pendingCount} layers loading in the background${failedCount ? ` · ${failedCount} unavailable` : ''}` : failedCount ? `${features.length} ${features.length === 1 ? 'feature' : 'features'} loaded · ${failedCount} layers unavailable` : stoppedCount ? `${features.length} ${features.length === 1 ? 'feature' : 'features'} loaded · ${stoppedCount} layers stopped` : `Scene ready · ${features.length} features`;
+  const downloadingCount = vectorLayers.filter(name => sceneLayers.states[groupForLayer(name).id].status === 'loading').length;
+  const waitingCount = vectorLayers.filter(name => sceneLayers.states[groupForLayer(name).id].status === 'waiting').length;
+  const queueCount = pendingCount - downloadingCount - waitingCount;
+  const loadingSummary = [downloadingCount && `${downloadingCount} layers downloading`, waitingCount && `${waitingCount} waiting to retry`, queueCount && `${queueCount} queued`].filter(Boolean).join(' · ');
+  const dataMessage = !sceneStarted ? 'Preparing scene…' : loading ? `${features.length ? `${features.length} ${features.length === 1 ? 'feature' : 'features'} loaded · ` : ''}${loadingSummary}${failedCount ? ` · ${failedCount} unavailable` : ''}` : failedCount ? `${features.length} ${features.length === 1 ? 'feature' : 'features'} loaded · ${failedCount} layers unavailable` : stoppedCount ? `${features.length} ${features.length === 1 ? 'feature' : 'features'} loaded · ${stoppedCount} layers stopped` : `Scene ready · ${features.length} features`;
   const sceneMessage = preparing ? `${loading ? dataMessage : `${features.length.toLocaleString()} features loaded`} · Preparing 3D geometry (${preparing} layers)` : dataMessage;
   const area = points.length ? Math.abs((Math.max(...points.map(p => p.lat)) - Math.min(...points.map(p => p.lat))) * (Math.max(...points.map(p => p.lng)) - Math.min(...points.map(p => p.lng))) * 12364 * Math.cos(points[0].lat * Math.PI / 180)) : 0;
   const returnToMap = () => navigate('map');
