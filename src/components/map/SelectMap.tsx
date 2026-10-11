@@ -24,6 +24,13 @@ function Controls({ mode, points, onChange, onDrawingChange, target }: Props) {
   useEffect(() => { if (target) map.flyTo(target, 16); }, [target, map]);
   useEffect(() => {
     setDraft([]); setCursor(null);
+    if (points.length >= 3) {
+      const bounds = L.latLngBounds(points.map(p => L.latLng(p.lat, p.lng)));
+      if (!map.getBounds().contains(bounds)) map.fitBounds(bounds, {animate: false});
+    }
+  }, [points, map]);
+  useEffect(() => {
+    setDraft([]); setCursor(null);
     map.getContainer().classList.toggle('is-drawing', mode !== 'pan');
     if (mode !== 'pan') map.doubleClickZoom.disable();
     else map.doubleClickZoom.enable();

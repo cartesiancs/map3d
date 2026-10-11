@@ -20,9 +20,11 @@ function configureMapServer(server: ViteDevServer | PreviewServer) {
 
 // https://vitejs.dev/config/
 export default defineConfig({
-  // Prepare the lazily loaded worker dependency at startup. Discovering it on
-  // the first export otherwise makes Vite reload the page mid-download.
-  optimizeDeps: { include: ['rhino3dm'] },
+  // Prepare lazy worker dependencies at startup, avoiding a full-page reload
+  // during the first analysis/export. Direct-mode tests use their own cache so
+  // they cannot invalidate modules in an already-running gateway dev server.
+  cacheDir: process.env.VITE_MAP_DATA_TRANSPORT === 'direct' ? 'node_modules/.vite-direct' : 'node_modules/.vite',
+  optimizeDeps: { include: ['rhino3dm', 'clipper-lib'] },
   plugins: [
     {
       name: 'map-data-service',

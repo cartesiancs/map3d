@@ -22,8 +22,8 @@ function Probe(){
   const state=useThree();
   useFrame(()=>{
     const {camera,scene,controls}=state,target=(controls as any)?.target || new THREE.Vector3();
-    let buildings=0;scene.traverseVisible(object=>{if(object.name==='building' || object.userData.mapBatch?.batch.layer==='Buildings')buildings++;});
-    (window as any).__picking={buildings,ready:!large || scene.getObjectByName('map-features')?.userData.preparing===0,direction:camera.position.clone().sub(target).normalize().toArray(),distance:camera.position.distanceTo(target)};
+    let buildings=0,buildingObject='';scene.traverseVisible(object=>{if(object.name==='building' || object.userData.mapBatch?.features.some((feature:Feature)=>feature.key==='building') && object.userData.mapBatch.batch.layer==='Buildings'){buildings++;buildingObject=object.uuid;}});
+    (window as any).__picking={buildings,buildingObject,ready:!large || scene.getObjectByName('map-features')?.userData.preparing===0,direction:camera.position.clone().sub(target).normalize().toArray(),distance:camera.position.distanceTo(target)};
   });
   (window as any).__screenPoint=(point:number[])=>{
     state.camera.updateMatrixWorld();const p=new THREE.Vector3(...point).project(state.camera),rect=state.gl.domElement.getBoundingClientRect();
@@ -33,7 +33,8 @@ function Probe(){
 }
 function App(){
   const [selected,onSelect]=useState<Feature|null>(null),[buildings,setBuildings]=useState(true);
+  const [currentFeatures,setFeatures]=useState(features);
   const layers=Object.fromEntries(Object.keys(initialLayers).map(layer=>[layer,layer==='Buildings'?buildings:layer!=='Terrain'])) as typeof initialLayers;
-  return <><div style={{height:40}}><output>{selected?.key || 'No selection'}</output><button onClick={()=>setBuildings(value=>!value)}>Toggle buildings</button><button onClick={()=>onSelect(features[1])}>Select indoor cafe</button></div><div style={{height:'calc(100dvh - 40px)'}}><Space features={features} points={points} layers={layers} terrain={null} selected={selected} onSelect={onSelect} reset={0} exportRequest={{id:0,format:'glb'}} onExport={()=>{}} onError={message=>{throw Error(message);}}><Probe/></Space></div></>;
+  return <><div style={{height:40}}><output>{selected?.key || 'No selection'}</output><button onClick={()=>setBuildings(value=>!value)}>Toggle buildings</button><button onClick={()=>onSelect(features[1])}>Select indoor cafe</button><button onClick={()=>setFeatures(previous=>previous.map(feature=>({...feature,tags:{...feature.tags,height:feature.key==='building'?'21':feature.tags.height}})))}>Stream updated geometry</button><span data-testid="selected-height">{selected?.tags.height}</span></div><div style={{height:'calc(100dvh - 40px)'}}><Space features={currentFeatures} points={points} layers={layers} terrain={null} selected={selected} onSelect={onSelect} reset={0} exportRequest={{id:0,format:'glb'}} onExport={()=>{}} onError={message=>{throw Error(message);}}><Probe/></Space></div></>;
 }
 createRoot(document.getElementById('root')!).render(<App/>);

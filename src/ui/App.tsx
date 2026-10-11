@@ -1,17 +1,21 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Box, ArrowLeft, Search, Pentagon, RectangleHorizontal, Hand, ArrowUpRight, Layers, X, Download, RotateCcw, MapPin, LoaderCircle, PanelLeftClose, PanelLeftOpen, ChevronUp, ChevronDown, ChevronRight, FileJson, Sun, Moon, Sunrise, MoonStar } from 'lucide-react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Box, ArrowLeft, Search, Pentagon, RectangleHorizontal, Hand, ArrowUpRight, Layers, X, Download, RotateCcw, MapPin, LoaderCircle, PanelLeftClose, PanelLeftOpen, ChevronUp, ChevronDown, ChevronRight, FileJson, Sun, Moon, Sunrise, MoonStar, ChartNoAxesCombined } from 'lucide-react';
 import { MapComponent, type Point, type DrawMode } from '../components/map/SelectMap';
 import { Space, type ExportRequest } from '../three/Space';
 import { downloadFile } from '../data/download';
 import { groupForLayer, layerGroups, vectorLayers, initialLayers, buildingDimensions, type Feature, type LayerName } from '../data/layers';
-import { loadTerrain, type Terrain } from '../data/terrain';
 import { useSceneLayers } from '../hooks/useSceneLayers';
 import { useWorkspaceRoute } from '../hooks/useWorkspaceRoute';
+import { useBoundaryLocation } from '../hooks/useBoundaryLocation';
+import { useSiteAnalysis } from '../hooks/useSiteAnalysis';
+import { useSceneTerrain } from '../hooks/useSceneTerrain';
+import { boundaryKey, boundaryLabel } from '../data/boundary';
 import { readPreference, savePreference, type Theme } from './preferences';
 import type { SceneLighting } from '../three/lighting';
 import { collectSublayers, featureSublayer, isFeatureVisible, type SublayerVisibility } from '../data/sublayers';
 import { DataGuide } from './DataGuide';
 import { useRhinoExport } from '../hooks/useRhinoExport';
+const SiteDashboard = lazy(() => import('./SiteDashboard'));
 
 type Place = { place_id: number; display_name: string; lat: string; lon: string };
 const layerNames: LayerName[] = [...vectorLayers, 'Terrain'];
@@ -25,46 +29,64 @@ function App() {
   const [preparing, setPreparing] = useState(0);
   const [mode, setMode] = useState<DrawMode>('pan');
   const [isDrawing, setIsDrawing] = useState(false);
-  const { points, location, view, navigate, update: updateRoute } = useWorkspaceRoute();
+  const { points, location: savedLocation, locationBoundary, view, navigate, update: updateRoute } = useWorkspaceRoute();
+  const location = useBoundaryLocation(points, savedLocation, locationBoundary, updateRoute);
   const [query, setQuery] = useState('');
   const [places, setPlaces] = useState<Place[]>([]);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState('');
   const [target, setTarget] = useState<[number, number] | null>(null);
+  const [searchedPlace, setSearchedPlace] = useState<{points: Point[]; label: string}>();
+  const searchLocation = searchedPlace?.points === points ? searchedPlace.label : '';
   const sceneLayers = useSceneLayers(points);
-  const { features, loading, started: sceneStarted, start: startLayers, clear: clearLayers } = sceneLayers;
-  const [status, setStatus] = useState('');
-  const [error, setError] = useState('');
+  const { features, loading, started: sceneStarted, start: startLayers } = sceneLayers;
+  // Keep the worker alive across menus and routes; each source arrival refreshes it.
+  const analysis = useSiteAnalysis(points, features, sceneStarted && points.length >= 3);
+  const {refreshIfStale} = sceneLayers;
+  useEffect(() => { if (view !== 'map') refreshIfStale(); }, [view, refreshIfStale]);
+  useEffect(() => { if (sceneStarted) void import('./SiteDashboard').catch(() => {}); }, [sceneStarted]);
+  type Feedback = {points: Point[]; view: typeof view; value: string};
+  const [statusData, setStatusData] = useState<Feedback>();
+  const [errorData, setErrorData] = useState<Feedback>();
+  const status = statusData?.points === points && statusData.view === view ? statusData.value : '';
+  const error = errorData?.points === points && errorData.view === view ? errorData.value : '';
+  const setStatus = useCallback((value: string) => setStatusData({points, view, value}), [points, view]);
+  const setError = useCallback((value: string) => setErrorData({points, view, value}), [points, view]);
   const rhinoExport=useRhinoExport(setStatus,setError);
   const {cancel:cancelRhinoExport}=rhinoExport;
   useEffect(()=>{cancelRhinoExport();},[points,view,cancelRhinoExport]);
-  const [selected, setSelected] = useState<Feature | null>(null);
+  const [selection, setSelection] = useState<{points: Point[]; feature: Feature | null}>();
+  const setSelected = useCallback((feature: Feature | null) => setSelection({points, feature}), [points]);
   const [layers, setLayers] = useState<Record<LayerName, boolean>>(initialLayers);
   const [sublayers,setSublayers]=useState<SublayerVisibility>({});
+  const selected = useMemo(() => {
+    if (selection?.points !== points || !selection.feature) return null;
+    const current = features.find(feature => feature.key === selection.feature!.key);
+    return current && isFeatureVisible(current, layers, sublayers) ? current : null;
+  }, [selection, points, features, layers, sublayers]);
   const [expandedLayers,setExpandedLayers]=useState<Partial<Record<LayerName,boolean>>>({});
-  const [terrain, setTerrain] = useState<Terrain | null>(null);
-  const [terrainState, setTerrainState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
-  const [terrainError, setTerrainError] = useState('');
-  const [terrainRetry, setTerrainRetry] = useState(0);
-  const terrainRequest = useRef<AbortController | null>(null);
+  const {value: terrain, status: terrainState, error: terrainError, retry: retryTerrain} = useSceneTerrain(points, layers.Terrain && sceneStarted);
   const [reset, setReset] = useState(0);
   const [exportRequest, setExportRequest] = useState<ExportRequest>({ id: 0, format: 'glb' });
   const searchRequest = useRef<AbortController | null>(null);
-  useEffect(() => () => { searchRequest.current?.abort(); }, []);
-  const updateBoundary = (p: Point[]) => { updateRoute({ points: p }); setIsDrawing(false); setStatus(p.length ? '' : 'Boundary cleared.'); setError(''); setMode('pan'); };
+  useEffect(() => {
+    setPlaces([]); setSearching(false); setSearchError(''); setSearchedPlace(undefined);
+    return () => { searchRequest.current?.abort(); };
+  }, [points, view]);
+  const updateBoundary = (p: Point[]) => { updateRoute({ points: p, location: boundaryLabel(p), locationBoundary: undefined }); setIsDrawing(false); setStatusData({points:p, view, value:p.length ? '' : 'Boundary cleared.'}); setErrorData(undefined); setMode('pan'); };
   const previousBoundary = useRef(points);
   useEffect(() => {
     const changed = previousBoundary.current !== points;
     previousBoundary.current = points;
     if (changed) {
-      clearLayers(); terrainRequest.current?.abort(); setTerrain(null); setTerrainState('idle'); setTerrainError(''); setSelected(null);
+      setSelected(null); setPreparing(0);
     }
-    if (view === '3d' && (changed || !sceneStarted)) {
+    if (view !== 'map' && (changed || !sceneStarted)) {
       const priority = [...layerGroups].sort((a,b) => Number(b.layers.some(name => layers[name])) - Number(a.layers.some(name => layers[name])));
       startLayers(priority.map(group => group.id));
     }
-  }, [points, view, sceneStarted, startLayers, clearLayers, layers]);
-  useEffect(() => { setMode('pan'); setSelected(null); setDrawerMinimized(false); setStatus(''); setError(''); }, [view]);
+  }, [points, view, sceneStarted, startLayers, layers, setSelected]);
+  useEffect(() => { setMode('pan'); setSelection(undefined); setDrawerMinimized(false); setStatusData(undefined); setErrorData(undefined); }, [view]);
   const search = async (e: React.FormEvent) => {
     e.preventDefault(); if (!query.trim()) return;
     searchRequest.current?.abort(); const controller = new AbortController(); searchRequest.current = controller;
@@ -72,28 +94,14 @@ function App() {
     try {
       const r = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=5&q=${encodeURIComponent(query)}`, { signal: controller.signal });
       if (!r.ok) throw new Error('Location search is unavailable. Try again shortly.');
-      const data = await r.json(); setPlaces(data); if (!data.length) setSearchError('No locations found. Try a city, address, or postcode.');
+      const data = await r.json(); if (controller.signal.aborted) return;
+      setPlaces(data); if (!data.length) setSearchError('No locations found. Try a city, address, or postcode.');
     } catch (e) { if (!controller.signal.aborted) setSearchError(e instanceof Error ? e.message : 'Search failed. Please retry.'); }
     finally { if (!controller.signal.aborted) setSearching(false); }
   };
   const generate = () => {
     navigate('3d');
   };
-  useEffect(() => {
-    if (!layers.Terrain || !sceneStarted || !points.length || terrain) return;
-    const controller = new AbortController(); terrainRequest.current = controller;
-    setTerrainState('loading'); setTerrainError('');
-    const timeout = setTimeout(() => controller.abort('timeout'), 25000);
-    loadTerrain(points, controller.signal).then(data => {
-      if (!controller.signal.aborted) { setTerrain(data); setTerrainState('ready'); }
-    }).catch(e => {
-      if (!controller.signal.aborted || controller.signal.reason === 'timeout') {
-        controller.abort(); setTerrainState('error');
-        setTerrainError(controller.signal.reason === 'timeout' ? 'Elevation request timed out.' : e instanceof Error ? e.message : 'Elevation could not load.');
-      }
-    }).finally(() => clearTimeout(timeout));
-    return () => { clearTimeout(timeout); controller.abort(); };
-  }, [layers.Terrain, sceneStarted, points, terrain, terrainRetry]);
   const layerCounts = useMemo(() => { const counts = Object.fromEntries(vectorLayers.map(name => [name, 0])); for (const feature of features) counts[feature.layer]++; return counts; }, [features]);
   const sublayerGroups=useMemo(()=>collectSublayers(features),[features]);
   const visibleCounts=useMemo(()=>Object.fromEntries(vectorLayers.map(name=>[name,layers[name]?sublayerGroups[name].reduce((sum,type)=>sum+(sublayers[type.id]!==false?type.count:0),0):0])),[sublayerGroups,layers,sublayers]);
@@ -159,10 +167,11 @@ function App() {
     {loading && <button onClick={sceneLayers.cancel}>Stop loading layers</button>}
     {!loading && (failedCount > 0 || stoppedCount > 0) && <button onClick={sceneLayers.retryFailed}>Retry unavailable layers</button>}
   </>;
-  return <div className={`workspace${view === '3d' ? ' viewer-mode' : drawerMinimized ? ' sidebar-collapsed' : ''}`}>
+  return <div className={`workspace${view === '3d' ? ' viewer-mode' : view === 'dashboard' ? ' dashboard-mode' : drawerMinimized ? ' sidebar-collapsed' : ''}`}>
     <header className="app-header">
       <a className="brand" href="/map" onClick={event => { if (!event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey && event.button === 0) { event.preventDefault(); returnToMap(); } }} aria-label="Map3d home"><span><Box size={23}/></span>map3d</a>
       <div className="top-toolbar" role="toolbar" aria-label="Display and export tools">
+        <button className="dashboard-link" aria-label="Site dashboard" aria-current={view === 'dashboard' ? 'page' : undefined} disabled={points.length < 3 || isDrawing} onClick={() => navigate('dashboard')} title="Analyze the selected boundary"><ChartNoAxesCombined size={16}/><span>Site dashboard</span></button>
         <div className="toolbar-control theme-control" role="group" aria-label="Interface theme">
           <span className="toolbar-label">Appearance</span>
           <div className="segmented-control">
@@ -205,7 +214,7 @@ function App() {
             <button aria-label="Search" disabled={searching || !query.trim()}>{searching ? <LoaderCircle className="spin" size={17}/> : <ArrowUpRight size={18}/>}</button>
           </form>
           {searchError && <p role="status" className="error-text">{searchError}</p>}
-          {places.length > 0 && <ul className="results">{places.map(place => <li key={place.place_id}><button onClick={() => { setTarget([Number(place.lat), Number(place.lon)]); updateRoute({ location: place.display_name.split(',').slice(0, 2).join(',') }); setPlaces([]); }}><MapPin size={16}/>{place.display_name}</button></li>)}</ul>}
+          {places.length > 0 && <ul className="results">{places.map(place => <li key={place.place_id}><button onClick={() => { setTarget([Number(place.lat), Number(place.lon)]); setSearchedPlace({points, label: place.display_name.split(',').slice(0, 2).join(',')}); setPlaces([]); }}><MapPin size={16}/>{place.display_name}</button></li>)}</ul>}
         </section>
         <section>
           <div className="section-heading"><h2>Boundary</h2></div>
@@ -223,13 +232,14 @@ function App() {
       </div>
     </aside>}
     <main>
-      <div className="viewport-top">
-        <div className="location-pill"><MapPin size={15}/>{location}</div>
+      {view !== 'dashboard' && <div className="viewport-top">
+        <div className="location-pill"><MapPin size={15}/>{view === 'map' && searchLocation ? searchLocation : location}</div>
         {view === '3d' && <button className="back-to-map" onClick={returnToMap}><ArrowLeft size={15}/>Back to map</button>}
-      </div>
+      </div>}
       <div className="viewport">
         <div className="map-viewport" hidden={view !== 'map'}><MapComponent mode={mode} points={points} onChange={updateBoundary} onDrawingChange={setIsDrawing} target={target}/></div>
-        {view === '3d' && <Space sublayers={sublayers} features={features} points={points} layers={layers} terrain={terrain} selected={selected} onSelect={setSelected} reset={reset} exportRequest={exportRequest} onExport={message => setStatus(message)} onError={message => setError(message)} onPreparing={setPreparing} sceneLighting={sceneLighting}/>}
+        {view === '3d' && <Space key={boundaryKey(points)} sublayers={sublayers} features={features} points={points} layers={layers} terrain={terrain} selected={selected} onSelect={setSelected} reset={reset} exportRequest={exportRequest} onExport={message => setStatus(message)} onError={message => setError(message)} onPreparing={setPreparing} sceneLighting={sceneLighting}/>}
+        {view === 'dashboard' && <Suspense fallback={<div className="site-calculating">Opening site dashboard…</div>}><SiteDashboard key={boundaryKey(points)} points={points} location={location} data={sceneLayers} analysis={analysis} onMap={returnToMap} onViewer={generate}/></Suspense>}
       </div>
       {view === '3d' && <>
         <div className={`layer-panel${layersMinimized ? ' minimized' : ''}`}>
@@ -254,7 +264,7 @@ function App() {
                 {state && ['error', 'cancelled'].includes(state.status) && <div className="layer-failure"><details><summary>Why this layer is unavailable</summary><p>{state.message}</p></details><button disabled={loading} title={loading ? 'Other layers are still loading' : `Retry ${name}`} onClick={() => sceneLayers.retry(groupForLayer(name as typeof vectorLayers[number]).id)}>Retry {name}</button></div>}
               </div>;
             })}</div>
-            {layers.Terrain && terrainState === 'error' && <div className="terrain-error" role="status">{terrainError}<button onClick={() => setTerrainRetry(value => value + 1)}>Retry elevation</button></div>}
+            {layers.Terrain && terrainState === 'error' && <div className="terrain-error" role="status">{terrainError}<button onClick={retryTerrain}>Retry elevation</button></div>}
           </div>
         </div>
         <div className="viewer-actions">
@@ -269,7 +279,7 @@ function App() {
         <span>{!loading && !features.length ? failedCount ? 'No layers loaded.' : stoppedCount ? 'Loading stopped.' : 'No mapped features found. Try another boundary.' : sceneMessage}</span>
         {loadControls}
       </div>}
-      <div className="viewport-bottom"><span className="viewport-hint">{view === 'map' ? 'Draw a boundary to generate a scene' : 'Drag to orbit · Right-drag to pan · Scroll to zoom · Click to inspect'}</span><div className="viewport-credits"><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">© OpenStreetMap contributors</a><DataGuide/></div></div>
+      <div className="viewport-bottom"><span className="viewport-hint">{view === 'map' ? 'Draw a boundary to generate a scene' : view === 'dashboard' ? 'Indicative metrics from mapped data' : 'Drag to orbit · Right-drag to pan · Scroll to zoom · Click to inspect'}</span><div className="viewport-credits"><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">© OpenStreetMap contributors</a><DataGuide/></div></div>
     </main>
   </div>;
 }

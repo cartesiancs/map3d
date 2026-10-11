@@ -44,3 +44,23 @@ for(const large of [false,true]) {
     await expect(page.locator('output')).toHaveText('road');
   });
 }
+
+test('a streamed batch replacement between press and release still selects the current building',async({page})=>{
+  await page.goto('/tests/performance/picking.html?large=1');
+  await expect.poll(()=>page.evaluate(()=>(window as any).__picking?.ready)).toBe(true);
+  await page.getByLabel('View direction',{exact:true}).selectOption('top');
+  await expect.poll(()=>page.evaluate(()=>(window as any).__picking.direction[1])).toBeCloseTo(1,3);
+  const position=await page.evaluate(()=>(window as any).__screenPoint([0,20.2,0]));
+  const original=await page.evaluate(()=>(window as any).__picking.buildingObject);
+  await page.mouse.move(position.x,position.y);await page.mouse.down();
+  await page.getByRole('button',{name:'Stream updated geometry'}).evaluate((button:HTMLButtonElement)=>button.click());
+  await expect.poll(()=>page.evaluate(()=>(window as any).__picking.buildingObject)).not.toBe(original);
+  await expect.poll(()=>page.evaluate(()=>(window as any).__picking?.ready)).toBe(true);
+  await page.mouse.up();
+  await expect(page.locator('output')).toHaveText('building');
+  await expect(page.getByTestId('selected-height')).toHaveText('21');
+  // Orbit/pan gestures must leave the selection unchanged.
+  await page.mouse.move(position.x,position.y);await page.mouse.down();
+  await page.mouse.move(position.x+20,position.y+20,{steps:3});await page.mouse.up();
+  await expect(page.locator('output')).toHaveText('building');
+});
