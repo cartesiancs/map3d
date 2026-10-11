@@ -7,36 +7,47 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node --test tests/*.test.mjs",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",
     "@react-three/drei": "^10.0.2",
     "@react-three/fiber": "^9.0.4",
+    "@types/clipper-lib": "^6.4.0",
     "@types/three": "^0.173.0",
     "axios": "^1.7.9",
+    "clipper-lib": "^6.4.2",
     "deventds2": "^0.1.10",
     "leaflet": "^1.9.4",
     "lucide-react": "^0.475.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-leaflet": "^5.0.0",
+    "rhino3dm": "^8.35.0",
     "three": "^0.173.0",
     "zustand": "^5.0.3"
   },
   "devDependencies": {
     "@eslint/js": "^9.19.0",
+    "@playwright/test": "1.56.1",
     "@types/leaflet": "^1.9.16",
     "@types/react": "^19.0.8",
     "@types/react-dom": "^19.0.3",
     "@vitejs/plugin-react": "^4.3.4",
+    "esbuild": "^0.24.2",
     "eslint": "^9.19.0",
     "eslint-plugin-react-hooks": "^5.0.0",
     "eslint-plugin-react-refresh": "^0.4.18",
     "globals": "^15.14.0",
+    "jsdom": "16.7.0",
     "typescript": "~5.7.2",
     "typescript-eslint": "^8.22.0",
     "vite": "^6.1.0",
     "vite-plugin-dts": "^4.5.0"
+  },
+  "engines": {
+    "node": ">=22.18.0"
   }
 }

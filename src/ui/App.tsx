@@ -1,305 +1,290 @@
-import { css, keyframes } from "@emotion/react";
-import { Space } from "../three/Space";
-import { FullscreenModal } from "../components/FullscreenModal";
-import { Title } from "@/components/text/Title";
-import { Description } from "@/components/text/Description";
-import { Column } from "@/components/flex/Column";
-import { MapComponent } from "@/components/map/SelectMap";
-import { useEffect, useState } from "react";
-import {
-  Button,
-  NextButton,
-  PrevButton,
-} from "@/components/button/BottomButton";
-import { BuildingHeights, Building } from "@/components/map/Processing";
-import { ChevronLeft, ChevronRight, Download, Loader2 } from "lucide-react";
-import { useAreaStore } from "@/state/areaStore";
-import { useActionStore } from "@/state/exportStore";
-import { Modal } from "@/components/modal/Modal";
-import { TopNav } from "@/components/nav/TopNav";
-import { getCookie } from "@/utils/cookie";
-import { Row } from "@/components/flex/Row";
-import instanceFleet from "@/api/axios";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Box, ArrowLeft, Search, Pentagon, RectangleHorizontal, Hand, ArrowUpRight, Layers, X, Download, RotateCcw, MapPin, LoaderCircle, PanelLeftClose, PanelLeftOpen, ChevronUp, ChevronDown, ChevronRight, FileJson, Sun, Moon, Sunrise, MoonStar, ChartNoAxesCombined } from 'lucide-react';
+import { MapComponent, type Point, type DrawMode } from '../components/map/SelectMap';
+import { Space, type ExportRequest } from '../three/Space';
+import { downloadFile } from '../data/download';
+import { groupForLayer, layerGroups, vectorLayers, initialLayers, buildingDimensions, type Feature, type LayerName } from '../data/layers';
+import { useSceneLayers } from '../hooks/useSceneLayers';
+import { useWorkspaceRoute } from '../hooks/useWorkspaceRoute';
+import { useBoundaryLocation } from '../hooks/useBoundaryLocation';
+import { useSiteAnalysis } from '../hooks/useSiteAnalysis';
+import { useSceneTerrain } from '../hooks/useSceneTerrain';
+import { boundaryKey, boundaryLabel } from '../data/boundary';
+import { readPreference, savePreference, type Theme } from './preferences';
+import type { SceneLighting } from '../three/lighting';
+import { collectSublayers, featureSublayer, isFeatureVisible, type SublayerVisibility } from '../data/sublayers';
+import { DataGuide } from './DataGuide';
+import { useRhinoExport } from '../hooks/useRhinoExport';
+const SiteDashboard = lazy(() => import('./SiteDashboard'));
 
-const IconSize = css({
-  width: "14px",
-  height: "14px",
-});
-
-const spinAnimation = keyframes`
-from { transform: rotate(0deg); }
-to { transform: rotate(360deg); }
-`;
-
+type Place = { place_id: number; display_name: string; lat: string; lon: string };
+const layerNames: LayerName[] = [...vectorLayers, 'Terrain'];
 function App() {
-  const [isNextButtonDisabled, setIsNextButtonDisabled] = useState(true);
-  const [areaData, setAreaData] = useState([]);
-  const [steps, setSteps] = useState(["front", "processing"]);
-  const [step, setStep] = useState(0);
-  const [isWarnModal, setIsWarnModal] = useState(false);
-  const [isExportModal, setIsExportModal] = useState(false);
-  const [isFleetLogin, setIsFleetLogin] = useState(false);
-  const [isFleetModal, setIsFleetModal] = useState(false);
-  const [spaceList, setSpaceList] = useState([]);
-  const [buildings, setBuildings] = useState<Building[]>([]);
-  const [isFetchingBuildings, setIsFetchingBuildings] = useState(false);
-  const [hasFetchedBuildings, setHasFetchedBuildings] = useState(false);
-
-  const setCenter = useAreaStore((state) => state.setCenter);
-  const appendAreas = useAreaStore((state) => state.appendAreas);
-  const setAction = useActionStore((state) => state.setAction);
-  const setFleet = useActionStore((state) => state.setFleet);
-
-  const checkIsBig = () => {
-    const a = areaData[0].lat - areaData[1].lat;
-    const b = areaData[0].lng - areaData[1].lng;
-
-    console.log(a + b);
-
-    if (a + b > 0.1) {
-      return true;
-    } else {
-      return false;
-    }
-  };
-
-  const exportFile = () => {
-    setAction(true);
-  };
-
-  const exportFleet = () => {
-    setAction(true);
-  };
-
-  const getFleetSpaces = async () => {
-    const getSpace: any = await instanceFleet.get("space");
-
-    setSpaceList([
-      ...getSpace.data.spaces.map((item) => {
-        return {
-          ...item,
-          key: item.id,
-        };
-      }),
-    ]);
-  };
-
-  const putGlbOnFleetSpace = (spaceId) => {
-    setFleet(spaceId, "fleet");
-    setTimeout(() => {
-      exportFleet();
-    }, 100);
-  };
-
-  const loadFleetSpace = () => {
-    getFleetSpaces();
-    setIsFleetModal(true);
-  };
-
-  const checkFleetLogin = () => {
-    try {
-      const isCookie = getCookie("token");
-      if (isCookie) {
-        setIsFleetLogin(true);
-      }
-    } catch (error) {}
-  };
-
-  const handleDone = (data) => {
-    setAreaData(data);
-    setCenter(data);
-    console.log(data, "AAEE");
-    setIsNextButtonDisabled(false);
-    setBuildings([]);
-    setHasFetchedBuildings(false);
-  };
-
-  const handleRemove = () => {
-    setAreaData([]);
-    setIsNextButtonDisabled(true);
-    setBuildings([]);
-    setHasFetchedBuildings(false);
-  };
-
-  const requestBuildings = async () => {
-    setIsFetchingBuildings(true);
-
-    const south = areaData[1].lat;
-    const west = areaData[1].lng;
-    const north = areaData[0].lat;
-    const east = areaData[0].lng;
-    const query = `[out:json][timeout:25];(way["building"]( ${south},${west},${north},${east} );relation["building"]( ${south},${west},${north},${east} ););out body geom;`;
-    try {
-      const response = await fetch("https://overpass-api.de/api/interpreter", {
-        method: "POST",
-        body: query,
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      });
-      const data = await response.json();
-      const blds: Building[] = data.elements.map((element) => ({
-        id: element.id,
-        tags: element.tags,
-        geometry: element.geometry
-          ? element.geometry.map((pt) => ({ lat: pt.lat, lng: pt.lon }))
-          : undefined,
-      }));
-      setBuildings(blds);
-      appendAreas(blds);
-      setHasFetchedBuildings(true);
-    } catch (error) {
-      console.error("Error fetching building data:", error);
-    } finally {
-      setIsFetchingBuildings(false);
-    }
-  };
-
-  const handleClickNextStep = async () => {
-    if (step == 0 && checkIsBig()) {
-      setIsWarnModal(true);
-      return false;
-    }
-    if (step == 1 && !hasFetchedBuildings) {
-      await requestBuildings();
-      return;
-    }
-    setStep(step + 1);
-  };
-
-  const handleClickPrevStep = () => {
-    setStep(step - 1);
-  };
-
-  const handleClickExport = () => {
-    setIsExportModal(true);
-  };
-
+  const [theme,setTheme]=useState<Theme>(()=>readPreference('map3d.theme',['light','dark'],window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'));
+  const [sceneLighting,setSceneLighting]=useState<SceneLighting>(()=>readPreference('map3d.sceneLighting',['day','night'],'day'));
+  useEffect(()=>{ document.documentElement.dataset.theme=theme; savePreference('map3d.theme',theme); },[theme]);
+  useEffect(()=>{ savePreference('map3d.sceneLighting',sceneLighting); },[sceneLighting]);
+  const [drawerMinimized, setDrawerMinimized] = useState(false);
+  const [layersMinimized, setLayersMinimized] = useState(false);
+  const [preparing, setPreparing] = useState(0);
+  const [mode, setMode] = useState<DrawMode>('pan');
+  const [isDrawing, setIsDrawing] = useState(false);
+  const { points, location: savedLocation, locationBoundary, view, navigate, update: updateRoute } = useWorkspaceRoute();
+  const location = useBoundaryLocation(points, savedLocation, locationBoundary, updateRoute);
+  const [query, setQuery] = useState('');
+  const [places, setPlaces] = useState<Place[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState('');
+  const [target, setTarget] = useState<[number, number] | null>(null);
+  const [searchedPlace, setSearchedPlace] = useState<{points: Point[]; label: string}>();
+  const searchLocation = searchedPlace?.points === points ? searchedPlace.label : '';
+  const sceneLayers = useSceneLayers(points);
+  const { features, loading, started: sceneStarted, start: startLayers } = sceneLayers;
+  // Keep the worker alive across menus and routes; each source arrival refreshes it.
+  const analysis = useSiteAnalysis(points, features, sceneStarted && points.length >= 3);
+  const {refreshIfStale} = sceneLayers;
+  useEffect(() => { if (view !== 'map') refreshIfStale(); }, [view, refreshIfStale]);
+  useEffect(() => { if (sceneStarted) void import('./SiteDashboard').catch(() => {}); }, [sceneStarted]);
+  type Feedback = {points: Point[]; view: typeof view; value: string};
+  const [statusData, setStatusData] = useState<Feedback>();
+  const [errorData, setErrorData] = useState<Feedback>();
+  const status = statusData?.points === points && statusData.view === view ? statusData.value : '';
+  const error = errorData?.points === points && errorData.view === view ? errorData.value : '';
+  const setStatus = useCallback((value: string) => setStatusData({points, view, value}), [points, view]);
+  const setError = useCallback((value: string) => setErrorData({points, view, value}), [points, view]);
+  const rhinoExport=useRhinoExport(setStatus,setError);
+  const {cancel:cancelRhinoExport}=rhinoExport;
+  useEffect(()=>{cancelRhinoExport();},[points,view,cancelRhinoExport]);
+  const [selection, setSelection] = useState<{points: Point[]; feature: Feature | null}>();
+  const setSelected = useCallback((feature: Feature | null) => setSelection({points, feature}), [points]);
+  const [layers, setLayers] = useState<Record<LayerName, boolean>>(initialLayers);
+  const [sublayers,setSublayers]=useState<SublayerVisibility>({});
+  const selected = useMemo(() => {
+    if (selection?.points !== points || !selection.feature) return null;
+    const current = features.find(feature => feature.key === selection.feature!.key);
+    return current && isFeatureVisible(current, layers, sublayers) ? current : null;
+  }, [selection, points, features, layers, sublayers]);
+  const [expandedLayers,setExpandedLayers]=useState<Partial<Record<LayerName,boolean>>>({});
+  const {value: terrain, status: terrainState, error: terrainError, retry: retryTerrain} = useSceneTerrain(points, layers.Terrain && sceneStarted);
+  const [reset, setReset] = useState(0);
+  const [exportRequest, setExportRequest] = useState<ExportRequest>({ id: 0, format: 'glb' });
+  const searchRequest = useRef<AbortController | null>(null);
   useEffect(() => {
-    checkFleetLogin();
-  }, []);
-
-  return (
-    <div css={css({ height: "100%", width: "100%" })}>
-      <TopNav step={step} />
-
-      <FullscreenModal isOpen={steps[step] == "front"}>
-        <Column gap="1rem">
-          <Column gap="0.5rem">
-            <Title>Generate 3d map</Title>
-            <Description>
-              Tools to create 3D maps based on maps and export them in GLB
-              format
-            </Description>
-          </Column>
-          <MapComponent
-            onRemove={handleRemove}
-            onDone={handleDone}
-          ></MapComponent>
-        </Column>
-      </FullscreenModal>
-
-      <FullscreenModal isOpen={steps[step] == "processing"}>
-        <Column gap="1rem">
-          <Column gap="0.5rem">
-            <Title>Processing</Title>
-            <Description>
-              Click Next Step to fetch building information. Once loaded, click
-              Next Step again to view the 3D scene.
-            </Description>
-
-            <BuildingHeights
-              buildings={buildings}
-              loading={isFetchingBuildings}
-            />
-          </Column>
-        </Column>
-      </FullscreenModal>
-
-      <PrevButton isShow={step != 0} onClick={handleClickPrevStep}>
-        <ChevronLeft css={IconSize} /> Prev Step
-      </PrevButton>
-
-      <NextButton
-        isShow={step != 2}
-        disabled={isNextButtonDisabled || isFetchingBuildings}
-        onClick={handleClickNextStep}
-      >
-        {isFetchingBuildings ? (
-          <>
-            <Loader2
-              css={[
-                IconSize,
-                css({ animation: `${spinAnimation} 1s linear infinite` }),
-              ]}
-            />
-            Fetching...
-          </>
-        ) : (
-          <>
-            Next Step <ChevronRight css={IconSize} />
-          </>
-        )}
-      </NextButton>
-
-      <NextButton isShow={step == 2} onClick={handleClickExport}>
-        Export GLB <Download css={IconSize} />
-      </NextButton>
-
-      <Modal isOpen={isWarnModal} onClose={() => setIsWarnModal(false)}>
-        <Column gap="0.5rem">
-          <Title>The area is too big </Title>
-          <Description>Do you want to proceed?</Description>
-          <Button
-            isShow={step != 2}
-            disabled={isNextButtonDisabled}
-            onClick={() => {
-              setStep(step + 1);
-              setIsWarnModal(false);
-            }}
-          >
-            Next Step <ChevronRight css={IconSize} />
-          </Button>
-        </Column>
-      </Modal>
-
-      <Modal isOpen={isExportModal} onClose={() => setIsExportModal(false)}>
-        <Column gap="0.5rem">
-          <Title>Export</Title>
-
-          <Row gap="0.5rem">
-            <Button isShow={true} onClick={exportFile}>
-              GLB Download <Download css={IconSize} />
-            </Button>
-
-            {/* {isFleetLogin ? (
-              <Button isShow={true} onClick={loadFleetSpace}>
-                Fleet Interlock
-              </Button>
-            ) : (
-              <Button
-                isShow={true}
-                onClick={() => window.open("https://fleet.im/auth")}
-              >
-                Fleet Login
-              </Button>
-            )} */}
-          </Row>
-        </Column>
-      </Modal>
-
-      <Modal isOpen={isFleetModal} onClose={() => setIsFleetModal(false)}>
-        <Column gap="0.5rem">
-          <Title>Select Fleet Space</Title>
-          {spaceList.map((item, index) => (
-            <Button isShow={true} onClick={() => putGlbOnFleetSpace(item.id)}>
-              {item.title}
-            </Button>
-          ))}
-        </Column>
-      </Modal>
-
-      <Space></Space>
-    </div>
-  );
+    setPlaces([]); setSearching(false); setSearchError(''); setSearchedPlace(undefined);
+    return () => { searchRequest.current?.abort(); };
+  }, [points, view]);
+  const updateBoundary = (p: Point[]) => { updateRoute({ points: p, location: boundaryLabel(p), locationBoundary: undefined }); setIsDrawing(false); setStatusData({points:p, view, value:p.length ? '' : 'Boundary cleared.'}); setErrorData(undefined); setMode('pan'); };
+  const previousBoundary = useRef(points);
+  useEffect(() => {
+    const changed = previousBoundary.current !== points;
+    previousBoundary.current = points;
+    if (changed) {
+      setSelected(null); setPreparing(0);
+    }
+    if (view !== 'map' && (changed || !sceneStarted)) {
+      const priority = [...layerGroups].sort((a,b) => Number(b.layers.some(name => layers[name])) - Number(a.layers.some(name => layers[name])));
+      startLayers(priority.map(group => group.id));
+    }
+  }, [points, view, sceneStarted, startLayers, layers, setSelected]);
+  useEffect(() => { setMode('pan'); setSelection(undefined); setDrawerMinimized(false); setStatusData(undefined); setErrorData(undefined); }, [view]);
+  const search = async (e: React.FormEvent) => {
+    e.preventDefault(); if (!query.trim()) return;
+    searchRequest.current?.abort(); const controller = new AbortController(); searchRequest.current = controller;
+    setSearching(true); setSearchError(''); setPlaces([]);
+    try {
+      const r = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=5&q=${encodeURIComponent(query)}`, { signal: controller.signal });
+      if (!r.ok) throw new Error('Location search is unavailable. Try again shortly.');
+      const data = await r.json(); if (controller.signal.aborted) return;
+      setPlaces(data); if (!data.length) setSearchError('No locations found. Try a city, address, or postcode.');
+    } catch (e) { if (!controller.signal.aborted) setSearchError(e instanceof Error ? e.message : 'Search failed. Please retry.'); }
+    finally { if (!controller.signal.aborted) setSearching(false); }
+  };
+  const generate = () => {
+    navigate('3d');
+  };
+  const layerCounts = useMemo(() => { const counts = Object.fromEntries(vectorLayers.map(name => [name, 0])); for (const feature of features) counts[feature.layer]++; return counts; }, [features]);
+  const sublayerGroups=useMemo(()=>collectSublayers(features),[features]);
+  const visibleCounts=useMemo(()=>Object.fromEntries(vectorLayers.map(name=>[name,layers[name]?sublayerGroups[name].reduce((sum,type)=>sum+(sublayers[type.id]!==false?type.count:0),0):0])),[sublayerGroups,layers,sublayers]);
+  const toggleLayer=(name:LayerName,enabled:boolean)=>{
+    setLayers(previous=>({...previous,[name]:enabled}));
+    if(enabled && name!=='Terrain') setSublayers(previous=>Object.fromEntries(Object.entries(previous).filter(([id])=>!id.startsWith(`${name}|`))));
+    if(!enabled && selected?.layer===name) setSelected(null);
+  };
+  const toggleSublayer=(id:string,enabled:boolean)=>{
+    setSublayers(previous=>({...previous,[id]:enabled}));
+    if(!enabled && selected && featureSublayer(selected).id===id) setSelected(null);
+  };
+  const layerStatus = (name: typeof vectorLayers[number]) => {
+    const state = sceneLayers.states[groupForLayer(name).id], count = layerCounts[name];
+    const countLabel = `${count.toLocaleString()} ${count === 1 ? 'feature' : 'features'}${layers[name] && visibleCounts[name]<count?` · ${visibleCounts[name].toLocaleString()} visible`:''}`;
+    if (state.status === 'queued') return count ? `${countLabel} · More data queued` : 'Queued';
+    if (state.status === 'waiting') return count ? `${countLabel} · ${state.message}` : state.message || 'Retrying automatically…';
+    if (state.status === 'loading') return count ? `${countLabel} · Loading more…` : state.message || 'Loading…';
+    if (state.status === 'error') return count ? `${countLabel} · Incomplete` : 'Failed to load';
+    if (state.status === 'cancelled') return count ? `${countLabel} · Loading stopped` : 'Not loaded · Stopped';
+    return count ? countLabel : state.status === 'ready' ? 'No mapped data here' : 'Not loaded';
+  };
+  const failedCount = vectorLayers.filter(name => sceneLayers.states[groupForLayer(name).id].status === 'error').length;
+  const stoppedCount = vectorLayers.filter(name => sceneLayers.states[groupForLayer(name).id].status === 'cancelled').length;
+  const pendingCount = vectorLayers.filter(name => ['loading', 'queued', 'waiting'].includes(sceneLayers.states[groupForLayer(name).id].status)).length;
+  const downloadingCount = vectorLayers.filter(name => sceneLayers.states[groupForLayer(name).id].status === 'loading').length;
+  const waitingCount = vectorLayers.filter(name => sceneLayers.states[groupForLayer(name).id].status === 'waiting').length;
+  const queueCount = pendingCount - downloadingCount - waitingCount;
+  const loadingSummary = [downloadingCount && `${downloadingCount} layers downloading`, waitingCount && `${waitingCount} waiting to retry`, queueCount && `${queueCount} queued`].filter(Boolean).join(' · ');
+  const dataMessage = !sceneStarted ? 'Preparing scene…' : loading ? `${features.length ? `${features.length} ${features.length === 1 ? 'feature' : 'features'} loaded · ` : ''}${loadingSummary}${failedCount ? ` · ${failedCount} unavailable` : ''}` : failedCount ? `${features.length} ${features.length === 1 ? 'feature' : 'features'} loaded · ${failedCount} layers unavailable` : stoppedCount ? `${features.length} ${features.length === 1 ? 'feature' : 'features'} loaded · ${stoppedCount} layers stopped` : `Scene ready · ${features.length} features`;
+  const sceneMessage = preparing ? `${loading ? dataMessage : `${features.length.toLocaleString()} features loaded`} · Preparing 3D geometry (${preparing} layers)` : dataMessage;
+  const area = points.length ? Math.abs((Math.max(...points.map(p => p.lat)) - Math.min(...points.map(p => p.lat))) * (Math.max(...points.map(p => p.lng)) - Math.min(...points.map(p => p.lng))) * 12364 * Math.cos(points[0].lat * Math.PI / 180)) : 0;
+  const returnToMap = () => navigate('map');
+  const exportScene = (format: ExportRequest['format']) => {
+    setStatus(''); setError('');
+    setExportRequest(previous => ({ id: previous.id + 1, format }));
+  };
+  const downloadRawData = () => {
+    try {
+      const ring = points.map(p => [p.lng, p.lat]);
+      if (ring.length) ring.push([...ring[0]]);
+      const elements = [...new Map(layerGroups.flatMap(group => sceneLayers.sources[group.id] || []).map(element => [`${element.type || 'way'}/${element.id}`, element])).values()];
+      const data = {
+        version: 0.6,
+        generator: 'map3d',
+        attribution: '© OpenStreetMap contributors',
+        elements,
+        scene: {
+          exportedAt: new Date().toISOString(), location,
+          boundary: { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [ring] } },
+          batches: Object.fromEntries(layerGroups.map(group => [group.id, { ...sceneLayers.states[group.id], elementCount: sceneLayers.sources[group.id]?.length || 0 }])),
+          visibleLayers: layerNames.filter(name => layers[name]),
+          sublayers: vectorLayers.flatMap(name=>sublayerGroups[name].map(type=>({...type,parent:name,visible:layers[name] && sublayers[type.id]!==false}))),
+          terrain: terrain ? { ...terrain, source: 'Mapzen Terrarium / AWS elevation-tiles-prod', attribution: 'https://github.com/tilezen/joerd/blob/master/docs/attribution.md' } : null,
+        },
+      };
+      downloadFile('map-data.json', JSON.stringify(data, null, 2), 'application/json');
+      setError(''); setStatus(`Raw data downloaded · ${elements.length.toLocaleString()} source elements.`);
+    } catch { setError('Could not download the raw data. Please retry.'); }
+  };
+  const canExportScene = !preparing && (features.some(feature => isFeatureVisible(feature,layers,sublayers)) || !!(layers.Terrain && terrain));
+  const downloadRhino=()=>rhinoExport.start({features,points,location,layers,sublayers,terrain,
+    layerStatus:Object.fromEntries(layerNames.map(name=>[name,name==='Terrain'?terrainState:sceneLayers.states[groupForLayer(name).id].status])),
+    incomplete:loading || failedCount>0 || stoppedCount>0 || terrainState==='loading' || terrainState==='error',
+  });
+  const loadControls = <>
+    {loading && <button onClick={sceneLayers.cancel}>Stop loading layers</button>}
+    {!loading && (failedCount > 0 || stoppedCount > 0) && <button onClick={sceneLayers.retryFailed}>Retry unavailable layers</button>}
+  </>;
+  return <div className={`workspace${view === '3d' ? ' viewer-mode' : view === 'dashboard' ? ' dashboard-mode' : drawerMinimized ? ' sidebar-collapsed' : ''}`}>
+    <header className="app-header">
+      <a className="brand" href="/map" onClick={event => { if (!event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey && event.button === 0) { event.preventDefault(); returnToMap(); } }} aria-label="Map3d home"><span><Box size={23}/></span>map3d</a>
+      <div className="top-toolbar" role="toolbar" aria-label="Display and export tools">
+        <button className="dashboard-link" aria-label="Site dashboard" aria-current={view === 'dashboard' ? 'page' : undefined} disabled={points.length < 3 || isDrawing} onClick={() => navigate('dashboard')} title="Analyze the selected boundary"><ChartNoAxesCombined size={16}/><span>Site dashboard</span></button>
+        <div className="toolbar-control theme-control" role="group" aria-label="Interface theme">
+          <span className="toolbar-label">Appearance</span>
+          <div className="segmented-control">
+            <button aria-label="Light theme" aria-pressed={theme==='light'} title="Light interface" onClick={()=>setTheme('light')}><Sun size={15}/><span>Light</span></button>
+            <button aria-label="Dark theme" aria-pressed={theme==='dark'} title="Dark interface" onClick={()=>setTheme('dark')}><Moon size={15}/><span>Dark</span></button>
+          </div>
+        </div>
+        {view==='3d' && <>
+          <div className="toolbar-control lighting-control" role="group" aria-label="Scene lighting">
+            <span className="toolbar-label">Scene lighting</span>
+            <div className="segmented-control">
+              <button aria-label="Day lighting" aria-pressed={sceneLighting==='day'} title="Daytime scene lighting" onClick={()=>setSceneLighting('day')}><Sunrise size={15}/><span>Day</span></button>
+              <button aria-label="Night lighting" aria-pressed={sceneLighting==='night'} title="Nighttime scene lighting" onClick={()=>setSceneLighting('night')}><MoonStar size={15}/><span>Night</span></button>
+            </div>
+          </div>
+          <div className="toolbar-control export-control" role="group" aria-label="Scene exports">
+            <span className="toolbar-label">Scene tools</span>
+            <div className="viewer-toolbar">
+              <button aria-label="Reset camera" title="Reset camera" onClick={()=>setReset(value=>value+1)}><RotateCcw size={16}/></button>
+              <span className="toolbar-divider"/>
+              <button aria-label="Download Rhino 3DM" title="Download all loaded geometry as Rhino 7+ 3DM, including hidden layers, nested sublayers and colors (metres, Z-up)" disabled={rhinoExport.busy || (!features.length && !terrain)} onClick={downloadRhino}>{rhinoExport.busy?<LoaderCircle className="spin" size={15}/>:<Download size={15}/>}3DM</button>
+              <button aria-label="Download GLB" title="Download visible layers as GLB, including materials" disabled={rhinoExport.busy || !canExportScene} onClick={()=>exportScene('glb')}><Download size={15}/>GLB</button>
+              <button aria-label="Download OBJ" title="Download visible geometry as OBJ (metres, Y-up; no materials)" disabled={rhinoExport.busy || !canExportScene} onClick={()=>exportScene('obj')}><Download size={15}/>OBJ</button>
+              <button aria-label="Download raw data (JSON)" title="Download all loaded source data, boundary, and load statuses as JSON" disabled={!Object.keys(sceneLayers.sources).length} onClick={downloadRawData}><FileJson size={15}/><span className="raw-data-label">Raw data</span></button>
+            </div>
+          </div>
+        </>}
+      </div>
+    </header>
+    {view === 'map' && <aside className="sidebar" aria-label="Map tools">
+      <div className="drawer-top">
+        {!drawerMinimized && <span>Map tools</span>}
+        <button className="drawer-toggle" aria-label={drawerMinimized ? 'Expand map tools' : 'Minimize map tools'} title={drawerMinimized ? 'Expand map tools' : 'Minimize map tools'} aria-expanded={!drawerMinimized} aria-controls="map-tools-content" onClick={() => setDrawerMinimized(value => !value)}>{drawerMinimized ? <PanelLeftOpen size={19}/> : <PanelLeftClose size={19}/>}</button>
+      </div>
+      <div id="map-tools-content" className="drawer-content" hidden={drawerMinimized}>
+        <section>
+          <div className="section-heading"><h2>Find a location</h2></div>
+          <form className="search" onSubmit={search}>
+            <Search size={17}/><input aria-label="Search location" placeholder="City, address, or postcode" value={query} onChange={e => setQuery(e.target.value)}/>
+            <button aria-label="Search" disabled={searching || !query.trim()}>{searching ? <LoaderCircle className="spin" size={17}/> : <ArrowUpRight size={18}/>}</button>
+          </form>
+          {searchError && <p role="status" className="error-text">{searchError}</p>}
+          {places.length > 0 && <ul className="results">{places.map(place => <li key={place.place_id}><button onClick={() => { setTarget([Number(place.lat), Number(place.lon)]); setSearchedPlace({points, label: place.display_name.split(',').slice(0, 2).join(',')}); setPlaces([]); }}><MapPin size={16}/>{place.display_name}</button></li>)}</ul>}
+        </section>
+        <section>
+          <div className="section-heading"><h2>Boundary</h2></div>
+          <div className="draw-tools">{([{ id: 'pan', label: 'Explore', icon: Hand }, { id: 'rectangle', label: 'Rectangle', icon: RectangleHorizontal }, { id: 'polygon', label: 'Polygon', icon: Pentagon }] as const).map(tool => <button key={tool.id} aria-pressed={mode === tool.id} onClick={() => setMode(tool.id)}><tool.icon size={21}/>{tool.label}</button>)}</div>
+          <p className="hint">{mode === 'rectangle' ? 'Click two opposite corners. Esc cancels.' : mode === 'polygon' ? 'Click vertices, then finish or click the first point. Esc cancels.' : 'Choose a tool to draw or replace the boundary.'}</p>
+          {points.length > 0 && <div className="boundary-summary"><span><i/>Boundary selected <small>{area.toFixed(2)} km² bounding area</small></span><button aria-label="Clear boundary" onClick={() => updateBoundary([])}><X size={16}/></button></div>}
+        </section>
+        <button className="primary" disabled={points.length < 3 || loading || isDrawing} onClick={generate}>
+          {loading ? <LoaderCircle size={18} className="spin"/> : <Box size={18}/>} {isDrawing ? 'Finish boundary first' : loading ? 'Loading scene layers…' : 'Generate 3D scene'}{!loading && <ArrowUpRight size={18}/>}
+        </button>
+        <div className="feedback" aria-live="polite">
+          {sceneStarted && <><p>{sceneMessage}</p>{loading && <div className="progress"/>}{loadControls}</>}
+          {status && <p>{status}</p>}{error && <div role="alert" className="error-text">{error}</div>}
+        </div>
+      </div>
+    </aside>}
+    <main>
+      {view !== 'dashboard' && <div className="viewport-top">
+        <div className="location-pill"><MapPin size={15}/>{view === 'map' && searchLocation ? searchLocation : location}</div>
+        {view === '3d' && <button className="back-to-map" onClick={returnToMap}><ArrowLeft size={15}/>Back to map</button>}
+      </div>}
+      <div className="viewport">
+        <div className="map-viewport" hidden={view !== 'map'}><MapComponent mode={mode} points={points} onChange={updateBoundary} onDrawingChange={setIsDrawing} target={target}/></div>
+        {view === '3d' && <Space key={boundaryKey(points)} sublayers={sublayers} features={features} points={points} layers={layers} terrain={terrain} selected={selected} onSelect={setSelected} reset={reset} exportRequest={exportRequest} onExport={message => setStatus(message)} onError={message => setError(message)} onPreparing={setPreparing} sceneLighting={sceneLighting}/>}
+        {view === 'dashboard' && <Suspense fallback={<div className="site-calculating">Opening site dashboard…</div>}><SiteDashboard key={boundaryKey(points)} points={points} location={location} data={sceneLayers} analysis={analysis} onMap={returnToMap} onViewer={generate}/></Suspense>}
+      </div>
+      {view === '3d' && <>
+        <div className={`layer-panel${layersMinimized ? ' minimized' : ''}`}>
+          <div className="layer-panel-heading">
+            <Layers size={16}/><h2>Scene layers</h2>
+            <button aria-label={layersMinimized ? 'Expand scene layers' : 'Minimize scene layers'} title={layersMinimized ? 'Expand scene layers' : 'Minimize scene layers'} aria-expanded={!layersMinimized} aria-controls="scene-layers-content" onClick={() => setLayersMinimized(value => !value)}>{layersMinimized ? <ChevronDown size={17}/> : <ChevronUp size={17}/>}</button>
+          </div>
+          <div id="scene-layers-content" className="layer-panel-content" hidden={layersMinimized}>
+            <p className="layer-hint" aria-live="polite">{sceneMessage}</p>
+            <div className="layer-list" role="region" aria-label="Scene layer list" tabIndex={0}>{layerNames.map(name => {
+              const state = name === 'Terrain' ? null : sceneLayers.states[groupForLayer(name).id];
+              const types=name==='Terrain'?[]:sublayerGroups[name];
+              const mixed=name!=='Terrain' && layers[name] && visibleCounts[name]>0 && visibleCounts[name]<layerCounts[name];
+              const checked=layers[name] && (name==='Terrain' || !layerCounts[name] || visibleCounts[name]===layerCounts[name]);
+              const groupId=`sublayers-${layerNames.indexOf(name)}`;
+              return <div key={name} className={`layer-entry ${state?.status || ''}`}>
+                <div className="layer-main-row">
+                  {types.length>0 ? <button className="sublayer-expander" aria-label={`${expandedLayers[name]?'Hide':'Show'} ${name} sublayers`} title={`${types.length} ${types.length===1?'sublayer':'sublayers'}`} aria-expanded={!!expandedLayers[name]} aria-controls={groupId} onClick={()=>setExpandedLayers(previous=>({...previous,[name]:!previous[name]}))}>{expandedLayers[name]?<ChevronDown size={14}/>:<ChevronRight size={14}/>}</button>:<span className="sublayer-spacer"/>}
+                  <label className="layer-row"><span>{name}<small>{name === 'Terrain' ? !layers.Terrain ? 'Load elevation on demand' : terrainState === 'loading' ? 'Loading elevation…' : terrainState === 'error' ? 'Failed · flat ground shown' : terrain ? `${Math.round(terrain.baseline)}–${Math.round(Math.max(...terrain.elevations))} m elevation` : 'Waiting for scene' : layerStatus(name)}{types.length>1 && <span className="type-count"> · {types.length} types</span>}</small></span><input aria-label={name} type="checkbox" checked={checked} ref={input=>{if(input) input.indeterminate=mixed;}} aria-checked={mixed?'mixed':checked} onChange={e=>toggleLayer(name,e.target.checked)}/></label>
+                </div>
+                {types.length>0 && <div className="sublayer-list" id={groupId} role="group" aria-label={`${name} sublayers`} hidden={!expandedLayers[name]}>{types.map(type=><label className="sublayer-row" key={type.id}><span>{type.label}<small>{type.count.toLocaleString()} {type.count===1?'feature':'features'}</small></span><input type="checkbox" aria-label={`${name}: ${type.label}`} checked={layers[name] && sublayers[type.id]!==false} disabled={!layers[name]} onChange={e=>toggleSublayer(type.id,e.target.checked)}/></label>)}</div>}
+                {state && ['error', 'cancelled'].includes(state.status) && <div className="layer-failure"><details><summary>Why this layer is unavailable</summary><p>{state.message}</p></details><button disabled={loading} title={loading ? 'Other layers are still loading' : `Retry ${name}`} onClick={() => sceneLayers.retry(groupForLayer(name as typeof vectorLayers[number]).id)}>Retry {name}</button></div>}
+              </div>;
+            })}</div>
+            {layers.Terrain && terrainState === 'error' && <div className="terrain-error" role="status">{terrainError}<button onClick={retryTerrain}>Retry elevation</button></div>}
+          </div>
+        </div>
+        <div className="viewer-actions">
+          {status && <p className="viewer-feedback" role="status">{status}</p>}
+          {rhinoExport.busy && <button className="rhino-cancel" onClick={()=>{rhinoExport.cancel();setStatus('Rhino export cancelled.');}}>Cancel Rhino export</button>}
+          {error && <p className="viewer-feedback error-text" role="alert">{error}</p>}
+        </div>
+        {selected && <div className="inspector" role="dialog" aria-label="Feature details"><button className="close" aria-label="Close feature details" onClick={() => setSelected(null)}><X size={18}/></button><div className="eyebrow">{selected.layer === 'Buildings' ? 'BUILDING INSPECTOR' : selected.layer.toUpperCase()}</div><h2>{selected.tags.name || (selected.layer === 'Buildings' ? 'Unnamed building' : selected.tags.amenity || selected.tags.leisure || selected.tags.natural || selected.tags.landuse || selected.tags.highway || selected.layer)}</h2><p className="hint">OpenStreetMap · {selected.type}/{selected.id}</p><dl>{Object.entries(selected.tags).map(([k,v]) => <div key={k}><dt>{k.replace(/_/g, ' ')}</dt><dd>{v}</dd></div>)}</dl>{selected.layer === 'Buildings' && <><p className="hint">{!buildingDimensions(selected.tags).estimated ? 'Height from map data.' : selected.tags['building:levels'] ? 'Height estimated at 3 m per level.' : 'Height unavailable. Displayed at an estimated 10 m.'}</p>{selected.tags['building:part'] && <p className="hint">Mapped building part · elevation offset respected.</p>}{selected.tags['roof:shape'] && <p className="hint">{['gabled', 'pyramidal'].includes(selected.tags['roof:shape']) ? `Roof: ${selected.tags['roof:shape']}${buildingDimensions(selected.tags).roofEstimated ? ' · estimated 2 m roof height' : ''}.` : selected.tags['roof:shape'] === 'flat' ? 'Flat roof from map data.' : `Roof shape “${selected.tags['roof:shape']}” is not reconstructed yet; shown flat.`}</p>}</>}</div>}
+      </>}
+      {view === '3d' && sceneStarted && (loading || preparing > 0 || failedCount > 0 || stoppedCount > 0 || !features.length) && <div className="scene-notice" role="status">
+        {(loading || preparing > 0) && <LoaderCircle size={15} className="spin"/>}
+        <span>{!loading && !features.length ? failedCount ? 'No layers loaded.' : stoppedCount ? 'Loading stopped.' : 'No mapped features found. Try another boundary.' : sceneMessage}</span>
+        {loadControls}
+      </div>}
+      <div className="viewport-bottom"><span className="viewport-hint">{view === 'map' ? 'Draw a boundary to generate a scene' : view === 'dashboard' ? 'Indicative metrics from mapped data' : 'Drag to orbit · Right-drag to pan · Scroll to zoom · Click to inspect'}</span><div className="viewport-credits"><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">© OpenStreetMap contributors</a><DataGuide/></div></div>
+    </main>
+  </div>;
 }
-
 export default App;

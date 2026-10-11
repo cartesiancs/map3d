@@ -1,0 +1,37 @@
+import {test,expect} from '@playwright/test';
+
+for(const large of [false,true]) test(`selection halo follows buildings and areas${large?' in a batched scene':''}`,async({page})=>{
+  const errors:string[]=[];page.on('pageerror',error=>errors.push(error.message));
+  await page.goto(`/tests/performance/selection.html${large?'?large=1':''}`);
+  await expect.poll(()=>page.evaluate(()=>(window as any).__selection?.ready)).toBe(true);
+  const names=await page.evaluate(()=>(window as any).__exportNames());
+  await page.getByRole('button',{name:'Select building',exact:true}).click();
+  await expect.poll(()=>page.evaluate(()=>(window as any).__selection)).toMatchObject({key:'building',halos:4});
+  expect(await page.evaluate(()=>(window as any).__exportNames())).toEqual(names);
+  await page.screenshot({path:`test-results/selection-building${large?'-batched':''}.png`});
+  await page.getByRole('button',{name:'Toggle lighting',exact:true}).click();
+  await expect.poll(()=>page.evaluate(()=>(window as any).__selection?.background)).toBe('11152e');
+  await page.screenshot({path:`test-results/selection-building-night${large?'-batched':''}.png`});
+  await page.getByRole('button',{name:'Toggle lighting',exact:true}).click();
+  await expect.poll(()=>page.evaluate(()=>(window as any).__selection?.background)).toBe('eeedf8');
+  await page.getByRole('button',{name:'Select road',exact:true}).click();
+  await expect.poll(()=>page.evaluate(()=>(window as any).__selection)).toMatchObject({key:'road',halos:4,width:3.5});
+  expect(await page.evaluate(()=>(window as any).__exportNames())).toEqual(names);
+  await page.screenshot({path:`test-results/selection-road${large?'-batched':''}.png`});
+  const buildingUUID=await page.evaluate(()=>(window as any).__buildingUUID());
+  await page.getByRole('button',{name:'Toggle road subtype',exact:true}).click();
+  await expect.poll(()=>page.evaluate(()=>(window as any).__selection?.key)).toBe(null);
+  await expect.poll(()=>page.evaluate(()=>(window as any).__exportNames())).not.toContain('road');
+  expect(await page.evaluate(()=>(window as any).__buildingUUID())).toBe(buildingUUID);
+  await page.getByRole('button',{name:'Toggle road subtype',exact:true}).click();
+  await expect.poll(()=>page.evaluate(()=>(window as any).__exportNames())).toEqual(names);
+  await page.getByRole('button',{name:'Select use',exact:true}).click();
+  await expect.poll(()=>page.evaluate(()=>(window as any).__selection)).toMatchObject({key:'use',halos:4});
+  await page.screenshot({path:`test-results/selection-use${large?'-batched':''}.png`});
+  await page.getByRole('button',{name:'Toggle land use',exact:true}).click();
+  await expect.poll(()=>page.evaluate(()=>(window as any).__selection?.key)).toBe(null);
+  await page.getByRole('button',{name:'Select building',exact:true}).click();
+  await page.getByRole('button',{name:'Clear selection',exact:true}).click();
+  await expect.poll(()=>page.evaluate(()=>(window as any).__selection?.halos)).toBe(0);
+  expect(errors).toEqual([]);
+});

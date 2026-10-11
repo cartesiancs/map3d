@@ -1,0 +1,39 @@
+import { useEffect, useMemo } from 'react';
+import * as THREE from 'three';
+import { Html } from '@react-three/drei';
+import { MapPin } from 'lucide-react';
+import { useThree } from '@react-three/fiber';
+import type { MapMarker } from './MarkerOcclusion';
+import { buildingDimensions, type Feature, type GeoPoint } from '../data/layers';
+import { terrainHeight, type Terrain } from '../data/terrain';
+import { buildFeatureGeometries, featureColor } from './geometry';
+import type { Projection } from './geometry';
+import { isSurface, surfaceMaterial, surfaceOrder } from './surfaces';
+import { sceneColors } from './palette';
+export function FeatureGeometry({ feature, project, terrain, selected, onSelect, exportable = true, surfaceStackOrder }: { feature: Feature; project: Projection; terrain: Terrain | null; selected: boolean; onSelect: (f: Feature) => void; exportable?: boolean; surfaceStackOrder?: number }) {
+  const invalidate = useThree(state => state.invalidate);
+  const marker = useMemo<MapMarker>(() => ({ element: null }), []);
+  const building = feature.layer === 'Buildings';
+  const surface = isSurface(feature);
+  const renderOrder = selected ? 30 : surface ? surfaceStackOrder ?? surfaceOrder(feature.layer) : 10;
+  const color = selected ? sceneColors.selectedPoint : featureColor(feature);
+  const center = feature.geometry.reduce((p,v) => ({ lat: p.lat + v.lat / feature.geometry.length, lon: p.lon + v.lon / feature.geometry.length }), { lat: 0, lon: 0 });
+  const anchor = project(center), ground = terrainHeight(terrain, center);
+  const dimensions = buildingDimensions(feature.tags);
+  const geometries = useMemo(() => buildFeatureGeometries(feature, project, terrain), [feature, project, terrain]);
+  useEffect(() => () => geometries.forEach(g => g.dispose()), [geometries]);
+  const line = useMemo(() => feature.kind === 'line' ? new THREE.Line(geometries[0], new THREE.LineBasicMaterial({ color })) : null, [feature.kind, geometries, color]);
+  useEffect(() => () => { if (line) (line.material as THREE.Material).dispose(); }, [line]);
+  if (feature.kind === 'point') {
+    const tree = feature.tags.natural === 'tree';
+    return <group position={[anchor.x, ground, -anchor.y]}>
+      {!tree && <group position={[0,8,0]} userData={{ mapMarker: marker }}><Html center zIndexRange={[4,0]}><button ref={element => { marker.element = element; if (element) invalidate(); }} className="feature-marker" style={{ color, display: 'none' }} aria-label={`Inspect ${feature.tags.name || feature.tags.amenity || feature.tags.railway || feature.tags.public_transport || feature.layer}`} title={feature.tags.name || feature.layer} onClick={e => { e.stopPropagation(); onSelect(feature); }}><MapPin size={14}/></button></Html></group>}
+      {tree ? <><mesh position={[0,2,0]} userData={{ exportToGLB: exportable, mapFeature: feature }}><cylinderGeometry args={[.35,.5,4,6]}/><meshStandardMaterial color={sceneColors.trunk}/></mesh><mesh position={[0,6,0]} userData={{ exportToGLB: exportable, mapFeature: feature }}><icosahedronGeometry args={[3.5,0]}/><meshStandardMaterial color={color} emissive={selected ? sceneColors.selectedPoint : '#000000'} emissiveIntensity={selected ? .35 : 0}/></mesh></> : <><mesh position={[0,2,0]} userData={{ exportToGLB: exportable, mapFeature: feature }}><cylinderGeometry args={[.4,.4,4,6]}/><meshStandardMaterial color={color} emissive={selected ? sceneColors.selectedPoint : '#000000'} emissiveIntensity={selected ? .35 : 0}/></mesh><mesh position={[0,5,0]} userData={{ exportToGLB: exportable, mapFeature: feature }}><sphereGeometry args={[2.5,8,6]}/><meshStandardMaterial color={color} emissive={selected ? sceneColors.selectedPoint : '#000000'} emissiveIntensity={selected ? .35 : 0}/></mesh></>}
+    </group>;
+  }
+  if (line) return <primitive name={feature.key} object={line} renderOrder={20} userData={{ exportToGLB: exportable, mapFeature: feature }}/>;
+  return <group rotation={[-Math.PI / 2,0,0]} position={[0, building ? ground + dimensions.base + .2 : 0, 0]}>
+    <mesh name={feature.key} renderOrder={renderOrder} geometry={geometries[0]} userData={{ exportToGLB: exportable, mapFeature: feature }}><meshStandardMaterial color={color} roughness={.85} polygonOffset={selected} polygonOffsetFactor={-2} polygonOffsetUnits={-2} {...(surface ? surfaceMaterial(selected) : {})} side={THREE.DoubleSide}/></mesh>
+    {geometries[1] && <mesh name={`${feature.key}/roof`} renderOrder={renderOrder} geometry={geometries[1]} position={[0,0,dimensions.bodyHeight]} userData={{ exportToGLB: exportable, mapFeature: feature }}><meshStandardMaterial color={selected ? sceneColors.selectedPoint : featureColor(feature,true)} roughness={.9} polygonOffset={selected} polygonOffsetFactor={-2} polygonOffsetUnits={-2} side={THREE.DoubleSide}/></mesh>}
+  </group>;
+}
