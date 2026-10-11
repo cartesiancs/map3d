@@ -67,3 +67,22 @@ test('Retry-After supports seconds, HTTP dates and invalid/missing headers',()=>
   assert.equal(retryAfterMilliseconds('60',now),60000);assert.equal(retryAfterMilliseconds('Fri, 09 Oct 2026 14:01:00 GMT',now),60000);
   assert.equal(retryAfterMilliseconds('bad',now),0);assert.equal(retryAfterMilliseconds(null,now),0);assert.equal(retryAfterMilliseconds('-1',now),0);
 });
+test('network failures receive more than two attempts and recover automatically',async()=>{
+  let calls=0;const h=harness(async()=>{if(++calls<3)throw new TypeError('Failed to fetch');return success();});
+  assert.equal((await h.client('network-recovery',new AbortController().signal,()=>{}))[0].id,1);assert.equal(calls,3);
+});
+test('persistent network failures stop after six attempts with increasing spacing',async()=>{
+  const times=[];const h=harness(async()=>{times.push(h.now());throw new TypeError('Failed to fetch');});
+  await assert.rejects(h.client('offline',new AbortController().signal,()=>{}),/after automatic retries/);assert.equal(times.length,6);
+  assert.ok(times[4]-times[2]>=8000);
+});
+test('same-origin gateway respects retry timing and retains upstream diagnostics on failure',async()=>{
+  let time=1700000000000,calls=0;
+  const client=createGeometryClient({endpoints:['/api/interpreter'],now:()=>time,wait:async ms=>{time+=ms;},fetch:async url=>{assert.equal(url,'/api/interpreter');calls++;return Response.json({error:'Map-data services could not complete this request (server: HTTP 504).'},{status:503,headers:{'Retry-After':'30'}});}});
+  await assert.rejects(client('gateway',new AbortController().signal,()=>{}),/HTTP 504.*Loaded layers are kept/);assert.equal(calls,6);assert.ok(time>=1700000150000);
+});
+test('gateway cooldown failures can recover after two unsuccessful attempts',async()=>{
+  let time=1700000000000,calls=0;
+  const client=createGeometryClient({endpoints:['/api/interpreter'],now:()=>time,wait:async ms=>{time+=ms;},fetch:async()=>++calls<3?Response.json({error:'Cooling down'},{status:503,headers:{'Retry-After':'30'}}):Response.json({elements:[]})});
+  assert.deepEqual(await client('gateway-recovery',new AbortController().signal,()=>{}),[]);assert.equal(calls,3);assert.ok(time>=1700000060000);
+});

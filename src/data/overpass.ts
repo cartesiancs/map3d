@@ -21,6 +21,7 @@ function abortableWait(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 type ClientOptions = {
+  endpoints?: string[];
   fetch?: typeof globalThis.fetch;
   now?: () => number;
   wait?: (ms: number, signal: AbortSignal) => Promise<void>;
@@ -30,7 +31,7 @@ type ClientOptions = {
 export function createGeometryClient(options: ClientOptions = {}) {
   const fetchData = options.fetch || ((...args: Parameters<typeof fetch>) => globalThis.fetch(...args));
   const now = options.now || Date.now, wait = options.wait || abortableWait, random = options.random || Math.random;
-  const servers = urls.map(url => ({ url, notBefore: 0, rateLimits: 0 }));
+  const servers = (options.endpoints || urls).map(url => ({ url, notBefore: 0, rateLimits: 0 }));
   const cache = new Map<string, { saved: number; elements: OsmElement[] }>();
   let preferred = 0, nextRequestAt = 0;
   return async function requestGeometry(query: string, signal: AbortSignal, onProgress: (message: string, progress?: RequestProgress) => void): Promise<OsmElement[]> {
@@ -42,10 +43,10 @@ export function createGeometryClient(options: ClientOptions = {}) {
       return cached.elements;
     }
     const deadline = now() + 180000;
-    let attempts = 0, transientFailures = 0, lastError: unknown;
+    let attempts = 0, transientFailures = 0, networkFailures = 0, lastError: unknown;
     while (attempts < 6 && now() < deadline) {
       signal.throwIfAborted();
-      const order = [preferred, 1 - preferred];
+      const order = Array.from({ length: servers.length }, (_, offset) => (preferred + offset) % servers.length);
       const available = order.find(index => servers[index].notBefore <= now());
       if (available === undefined) {
         const retryAt = Math.min(...servers.map(s => s.notBefore));
@@ -61,13 +62,13 @@ export function createGeometryClient(options: ClientOptions = {}) {
       const controller = new AbortController();
       const cancel = () => controller.abort(signal.reason);
       signal.addEventListener('abort', cancel, { once: true });
-      const timeout = setTimeout(() => controller.abort('timeout'), Math.min(40000, deadline - now()));
+      const timeout = setTimeout(() => controller.abort('timeout'), Math.min(server.url.startsWith('/') ? 75000 : 40000, deadline - now()));
       attempts++;
       try {
         const response = await fetchData(server.url, { method: 'POST', body: query, signal: controller.signal });
         const retryAfter = retryAfterMilliseconds(response.headers?.get('Retry-After'), now());
         if (response.status === 429 || response.status === 406) {
-          preferred = 1 - available;
+          preferred = (available + 1) % servers.length;
           server.rateLimits++;
           const backoff = Math.min(120000, 30000 * 2 ** (server.rateLimits - 1));
           server.notBefore = now() + Math.max(retryAfter, backoff) + Math.floor(random() * 1000);
@@ -75,11 +76,15 @@ export function createGeometryClient(options: ClientOptions = {}) {
           continue;
         }
         if (!response.ok) {
+          let detail = '';
+          if (response.headers?.get('Content-Type')?.includes('application/json')) {
+            try { const data = await response.json(); if (typeof data.error === 'string') detail = `${data.error} Loaded layers are kept.`; } catch { /* Fall back to the status code. */ }
+          }
           if ([408, 500, 502, 503, 504].includes(response.status)) {
             server.notBefore = now() + Math.max(retryAfter, 2000);
-            throw new MapRequestError(`Map-data servers are busy or timed out (HTTP ${response.status}). Loaded layers are kept.`, true);
+            throw new MapRequestError(detail || `Map-data servers are busy or timed out (HTTP ${response.status}). Loaded layers are kept.`, true);
           }
-          throw new MapRequestError(`The map service could not process this layer (HTTP ${response.status}). Loaded layers are kept.`, false);
+          throw new MapRequestError(detail || `The map service could not process this layer (HTTP ${response.status}). Loaded layers are kept.`, false);
         }
         let data: { elements?: OsmElement[]; remark?: string };
         try { data = await response.json(); }
@@ -97,14 +102,14 @@ export function createGeometryClient(options: ClientOptions = {}) {
         signal.throwIfAborted();
         if (error instanceof MapRequestError && !error.retryable) throw error;
         // Try the other service even if rendering delayed us past this server's cooldown.
-        preferred = 1 - available;
-        transientFailures++;
-        server.notBefore = Math.max(server.notBefore, now() + 2000);
+        preferred = (available + 1) % servers.length;
+        if (error instanceof MapRequestError) transientFailures++; else networkFailures++;
+        server.notBefore = Math.max(server.notBefore, now() + Math.min(30000, 2000 * 2 ** Math.max(0, networkFailures - 1)));
         lastError = controller.signal.reason === 'timeout'
           ? new MapRequestError('Map-data servers took too long to respond. Loaded layers are kept.', true)
           : error;
-        // Heavy or invalid responses should not repeatedly hold up later layers.
-        if (transientFailures >= 2) break;
+        // Direct upstream errors stop early; gateway cooldowns get the full retry budget.
+        if (transientFailures >= 2 && !server.url.startsWith('/')) break;
       } finally {
         clearTimeout(timeout); signal.removeEventListener('abort', cancel);
       }
@@ -113,4 +118,6 @@ export function createGeometryClient(options: ClientOptions = {}) {
     throw new Error('Could not reach the map-data servers after automatic retries. Loaded layers are kept.');
   };
 }
-export const requestGeometry = createGeometryClient();
+// Other static hosts can explicitly opt into direct requests; Cloudflare and
+// Vite use the same-origin service, which can identify the app to Overpass.
+export const requestGeometry = createGeometryClient(import.meta.env && import.meta.env.VITE_MAP_DATA_TRANSPORT !== 'direct' ? { endpoints: ['/api/interpreter'] } : {});

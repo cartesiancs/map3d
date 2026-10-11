@@ -13,7 +13,7 @@ export default defineConfig({
     launchOptions: { args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] },
   },
   webServer: {
-    command: process.env.PLAYWRIGHT_PREVIEW === '1' ? "npm run preview -- --host 127.0.0.1 --port 5179" : "npm run dev -- --host 127.0.0.1 --port 5179",
+    command: process.env.PLAYWRIGHT_PREVIEW === '1' ? "npm run preview -- --host 127.0.0.1 --port 5179" : "VITE_MAP_DATA_TRANSPORT=direct npm run dev -- --host 127.0.0.1 --port 5179",
     url: "http://127.0.0.1:5179",
     reuseExistingServer: false,
   },
