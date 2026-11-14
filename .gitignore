@@ -11,6 +11,11 @@ node_modules
 dist
 dist-ssr
 *.local
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
 
 # Editor directories and files
 .vscode/*
@@ -22,3 +27,8 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+*.tsbuildinfo
+test-results/
+playwright-report/
+.sites-runtime/

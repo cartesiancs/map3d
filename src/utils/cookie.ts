@@ -17,7 +17,7 @@ export const getCookies = () => {
 
 export const getCookie = (key: string) => {
   const cookieList = getCookies();
-  if (!cookieList.hasOwnProperty(key)) {
+  if (!Object.prototype.hasOwnProperty.call(cookieList, key)) {
     return "";
   }
   return cookieList[key];
