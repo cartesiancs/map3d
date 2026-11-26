@@ -16,6 +16,14 @@ export const GROUND_COLOR = "#e6e7ea";
 /** ground map: land and sea */
 export const LAND_COLOR = "#eceef1";
 export const SEA_COLOR = "#9cc2e8";
+/** the scene in each theme (exports always use the light colors above) */
+export const SCENE_COLORS = {
+  light: { background: "#f6f7f8", building: BUILDING_COLOR, hover: HOVER_COLOR, selected: SELECTED_COLOR, ground: GROUND_COLOR, land: LAND_COLOR, sea: SEA_COLOR, light: 1 },
+  // with the lights at `light` × their day intensity (Space.tsx)
+  dark: { background: "#1a1b1e", building: "#8a8f98", hover: "#6a9cf5", selected: "#3d83f7", ground: "#3a3c42", land: "#3a3c42", sea: "#253447", light: 0.45 },
+};
+export type SceneColors = (typeof SCENE_COLORS)["light"];
+
 /** roads drawn this much above the ground they follow (scene units), so they don't flicker into it */
 const ROAD_LIFT = 0.8;
 
@@ -33,11 +41,14 @@ export type Tile = {
   tags?: Record<string, string>[];
   lastWanted: number;
   failedAt?: number;
+  /** buildings: overlay revision the tile was built with (undefined: no edits) */
+  overlayRev?: number;
   /** ground under each building: [lowest, highest] corner (terrain on); null until computed */
   bases?: Float32Array | null;
   /** per-vertex ground offset (the aBase attribute array) */
   vertexBase?: Float32Array;
   terrainState?: "pending" | "ready" | "error";
+  terrainFailedAt?: number;
 };
 
 type GroundTile = {
@@ -67,7 +78,11 @@ export type Hit = { tile: Tile; index: number; distance: number };
 
 export type ManagerStats = { tiles: number; buildings: number; loading: number; failed: number; ground: number };
 
-const RETRY_AFTER_MS = 15000;
+/** a failed load is tried again after 2 s, 4 s, 8 s … up to a minute (network retries happen first, see retry.ts) */
+const RETRY_FIRST_MS = 2000;
+const RETRY_MAX_MS = 60000;
+/** buildings wait this long for the first overlay index, then load without it (and reload once it arrives) */
+const OVERLAY_WAIT_MS = 1500;
 const _v0 = new THREE.Vector3();
 const _v1 = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
@@ -163,8 +178,12 @@ export class TileManager {
   private landGround!: THREE.Material;
   private seaGround!: THREE.Material;
   private mapUniforms = { uLand: { value: new THREE.Color(LAND_COLOR) }, uSea: { value: new THREE.Color(SEA_COLOR) } };
+  /** light or dark scene colors (Settings → Appearance) */
+  colors: SceneColors = SCENE_COLORS.light;
   private hover: { mesh: THREE.Mesh; tile: Tile; index: number } | null = null;
   private selected: { mesh: THREE.Mesh; key: string; index: number } | null = null;
+  /** building shown at a proposed height: its original roof heights, to put back */
+  private preview: { tile: Tile; index: number; roof: Float32Array; height: number } | null = null;
   private frustum = new THREE.Frustum();
   private projScreen = new THREE.Matrix4();
   private box = new THREE.Box3();
@@ -173,6 +192,15 @@ export class TileManager {
   private lastStats = "";
   private lastCenter = new THREE.Vector3(Infinity, 0, 0);
   radius = 0;
+  /** consecutive failures per load ("building:x/y", "terrain:road:x/y", "ground:t:x/y", "map:x/y") */
+  private failures = new Map<string, number>();
+  private retryTimer: number | null = null;
+  private retryAt = 0;
+  /** approved edits: z14 tiles that have an overlay, with its revision (null until the first index) */
+  private overlayTiles: Record<string, number> | null = null;
+  private overlayWaitUntil = performance.now() + OVERLAY_WAIT_MS;
+  /** building tiles dropped for a newer overlay (their indices are no longer valid) */
+  onReplaced: (keys: string[]) => void = () => {};
 
   constructor(origin: Origin, config: LevelConfig) {
     this.origin = origin;
@@ -190,12 +218,28 @@ export class TileManager {
       };
       return withGroundOffset(pbr ? new THREE.MeshStandardMaterial(params) : new THREE.MeshLambertMaterial(params), this.uniforms, false);
     };
-    this.buildingMaterial = make(BUILDING_COLOR);
-    this.hoverMaterial = make(HOVER_COLOR, true);
-    this.selectMaterial = make(SELECTED_COLOR, true);
-    this.plainGround = this.groundMat(GROUND_COLOR);
-    this.landGround = this.groundMat(LAND_COLOR);
-    this.seaGround = this.groundMat(SEA_COLOR);
+    const c = this.colors;
+    this.buildingMaterial = make(c.building);
+    this.hoverMaterial = make(c.hover, true);
+    this.selectMaterial = make(c.selected, true);
+    this.plainGround = this.groundMat(c.ground);
+    this.landGround = this.groundMat(c.land);
+    this.seaGround = this.groundMat(c.sea);
+  }
+
+  /** switch the scene to the light or dark colors (materials are recolored in place) */
+  setTheme(dark: boolean) {
+    const c = (this.colors = dark ? SCENE_COLORS.dark : SCENE_COLORS.light);
+    const set = (m: THREE.Material, color: string) => (m as THREE.MeshLambertMaterial).color.set(color);
+    set(this.buildingMaterial, c.building);
+    set(this.hoverMaterial, c.hover);
+    set(this.selectMaterial, c.selected);
+    set(this.plainGround, c.ground);
+    set(this.landGround, c.land);
+    set(this.seaGround, c.sea);
+    this.mapUniforms.uLand.value.set(c.land);
+    this.mapUniforms.uSea.value.set(c.sea);
+    this.onChange();
   }
 
   /** lit ground (the relief shows through the shading) */
@@ -291,7 +335,7 @@ export class TileManager {
     this.selectGround(target, R, now);
     this.requestGround(now); // few z13 tiles, large visual impact: first
     this.requestTiles(now);
-    this.requestTerrainForTiles();
+    this.requestTerrainForTiles(now);
 
     // hand at most N new meshes to the GPU per frame, so buffer uploads don't stack into one long frame
     for (let n = 0; n < cfg.uploadsPerFrame && this.uploadQueue.length; n++) {
@@ -310,7 +354,9 @@ export class TileManager {
 
     this.evict();
     this.publish(target, now);
-    return this.uploadQueue.length > 0;
+    this.scheduleRetries(now);
+    // keep frames coming while buildings wait for the overlay index, so they start when the wait ends
+    return this.uploadQueue.length > 0 || (!this.overlayTiles && now < this.overlayWaitUntil);
   }
 
   private selectTiles(target: THREE.Vector3, R: number, now: number) {
@@ -419,14 +465,41 @@ export class TileManager {
     }
   }
 
+  /**
+   * New overlay index: building tiles built with another revision of their edits are dropped and load again
+   * (nearest first, like any missing tile).
+   */
+  setOverlay(tiles: Record<string, number>) {
+    this.overlayTiles = tiles;
+    const replaced: string[] = [];
+    const map = this.tiles.building;
+    for (const t of [...map.values()]) {
+      if (t.overlayRev === tiles[t.key]) continue;
+      if (t.object) {
+        this.group.remove(t.object);
+        t.object.geometry.dispose();
+      }
+      if (this.hover?.tile === t) this.setHover(null);
+      if (this.selected?.key === t.key) this.setSelected(null);
+      map.delete(t.key); // a load still in flight is dropped when it returns
+      replaced.push(t.key);
+    }
+    if (replaced.length) {
+      this.namedDirty = true;
+      this.onReplaced(replaced);
+    }
+    this.onChange();
+  }
+
   private requestTiles(now: number) {
     const layers: Layer[] = this.showRoads ? ["building", "road"] : ["building"];
+    if (!this.overlayTiles && now < this.overlayWaitUntil) layers.shift(); // edits first, so a tile is built once
     const order = [...this.wanted].sort((a, b) => a[1] - b[1]).map(([key]) => key);
     for (const key of [...order, ...this.prefetch]) {
       for (const layer of layers) {
         if (this.inFlight >= this.config.inFlight) return;
         const existing = this.tiles[layer].get(key);
-        if (existing && !(existing.state === "error" && now - (existing.failedAt ?? 0) > RETRY_AFTER_MS)) continue;
+        if (existing && !(existing.state === "error" && this.retryDue(`${layer}:${key}`, existing.failedAt, now))) continue;
         this.load(layer, key, now);
       }
     }
@@ -434,11 +507,12 @@ export class TileManager {
 
   private load(layer: Layer, key: string, now: number) {
     const [x, y] = key.split("/").map(Number);
-    const tile: Tile = { key, layer, x, y, state: "loading", lastWanted: now };
+    const overlayRev = layer === "building" ? this.overlayTiles?.[key] : undefined;
+    const tile: Tile = { key, layer, x, y, state: "loading", lastWanted: now, overlayRev };
     this.tiles[layer].set(key, tile);
     this.inFlight++;
     tileClient
-      .request({ layer, x, y, origin: this.origin, terrain: this.terrain })
+      .request({ layer, x, y, origin: this.origin, terrain: this.terrain, overlayRev })
       .then((data) => {
         if (this.tiles[layer].get(key) !== tile) return; // evicted or rebased meanwhile
         tile.data = data;
@@ -448,11 +522,14 @@ export class TileManager {
         if (data.terrain) this.applyTerrain(tile, data.terrain as BasesResult | RoadHeightsResult);
         this.uploadQueue.push(tile);
         if (layer === "building") this.namedDirty = true;
+        this.failures.delete(`${layer}:${key}`);
       })
       .catch((err) => {
+        if (this.tiles[layer].get(key) !== tile) return;
         console.error(`tile ${layer} ${key}:`, err);
         tile.state = "error";
         tile.failedAt = performance.now();
+        this.noteFailure(`${layer}:${key}`);
       })
       .finally(() => {
         this.inFlight--;
@@ -498,14 +575,16 @@ export class TileManager {
   }
 
   /** With terrain on: ground height under every building / road vertex, computed in the worker. */
-  private requestTerrainForTiles() {
+  private requestTerrainForTiles(now: number) {
     if (!this.terrain) return;
     const order = [...this.wanted].sort((a, b) => a[1] - b[1]).map(([key]) => key);
     for (const key of order) {
       for (const layer of ["building", "road"] as Layer[]) {
         if (this.terrainJobs >= 3) return;
         const t = this.tiles[layer].get(key);
-        if (!t || t.state !== "ready" || t.terrainState) continue;
+        if (!t || t.state !== "ready") continue;
+        // a failed placement is tried again: until it succeeds the tile is not drawn at all
+        if (t.terrainState && !(t.terrainState === "error" && this.retryDue(`terrain:${layer}:${key}`, t.terrainFailedAt, now))) continue;
         this.requestTerrainFor(t);
       }
     }
@@ -525,10 +604,13 @@ export class TileManager {
       .then((r) => {
         if (originId !== this.originId || this.tiles[t.layer].get(t.key) !== t || !t.object) return;
         this.applyTerrain(t, r);
+        this.failures.delete(`terrain:${t.layer}:${t.key}`);
       })
       .catch((err) => {
         console.error(`terrain for ${t.layer} ${t.key}:`, err);
         t.terrainState = "error";
+        t.terrainFailedAt = performance.now();
+        this.noteFailure(`terrain:${t.layer}:${t.key}`);
       })
       .finally(() => {
         this.terrainJobs--;
@@ -565,12 +647,12 @@ export class TileManager {
       const [x, y] = key.split("/").map(Number);
       const gKey = `${this.terrain ? "t" : "f"}:${key}`;
       const g = this.ground.get(gKey);
-      if ((!g || (g.state === "error" && now - (g.failedAt ?? 0) > RETRY_AFTER_MS)) && this.groundInFlight < this.groundBudget()) {
+      if ((!g || (g.state === "error" && this.retryDue(`ground:${gKey}`, g.failedAt, now))) && this.groundInFlight < this.groundBudget()) {
         this.loadGround(gKey, x, y, !this.terrain, now);
       }
       if (this.mapOn) {
         const img = this.maps.get(key);
-        if ((!img || (img.state === "error" && now - (img.failedAt ?? 0) > RETRY_AFTER_MS)) && this.groundInFlight < this.groundBudget()) {
+        if ((!img || (img.state === "error" && this.retryDue(`map:${key}`, img.failedAt, now))) && this.groundInFlight < this.groundBudget()) {
           this.loadMap(key, x, y, now);
         }
       }
@@ -601,11 +683,14 @@ export class TileManager {
         g.mesh.renderOrder = -1;
         g.state = "ready";
         this.group.add(g.mesh);
+        this.failures.delete(`ground:${key}`);
       })
       .catch((err) => {
+        if (this.ground.get(key) !== g) return;
         console.error(`ground ${key}:`, err);
         g.state = "error";
         g.failedAt = performance.now();
+        this.noteFailure(`ground:${key}`);
       })
       .finally(() => {
         this.groundInFlight--;
@@ -637,12 +722,15 @@ export class TileManager {
           map.material = this.groundMat(LAND_COLOR, texture);
         }
         map.state = "ready";
+        this.failures.delete(`map:${key}`);
         for (const g of this.ground.values()) if (g.mesh && `${g.x}/${g.y}` === key) g.mesh.material = this.groundMaterial(g);
       })
       .catch((err) => {
+        if (this.maps.get(key) !== map) return;
         console.error(`ground map ${key}:`, err);
         map.state = "error";
         map.failedAt = performance.now();
+        this.noteFailure(`map:${key}`);
       })
       .finally(() => {
         this.groundInFlight--;
@@ -873,7 +961,146 @@ export class TileManager {
     };
   }
 
+  /**
+   * Show one building at another height until cleared (Set height…, review queue): rewrites the roof ring of
+   * that building in its tile, and puts it back on clear. `height` uses the building height units.
+   */
+  previewHeight(ref: { key: string; index: number } | null, height: number | null) {
+    const p = this.preview;
+    if (p && this.tiles.building.get(p.tile.key) === p.tile) this.setRoof(p.tile, p.index, p.roof, p.height);
+    this.preview = null;
+    if (ref && height != null) {
+      const tile = this.tiles.building.get(ref.key);
+      if (tile?.state === "ready" && tile.object) {
+        const d = tile.data as BuildingTileData;
+        const [v0, vc] = d.ranges.subarray(4 * ref.index, 4 * ref.index + 2);
+        const n = vc / 2;
+        const roof = new Float32Array(n);
+        for (let k = 0; k < n; k++) roof[k] = d.positions[(v0 + n + k) * 3 + 1];
+        this.preview = { tile, index: ref.index, roof, height: d.bounds[5 * ref.index + 4] };
+        this.setRoof(tile, ref.index, roof.map(() => height), height);
+      }
+    }
+    this.onChange();
+  }
+
+  private setRoof(tile: Tile, index: number, roof: Float32Array, height: number) {
+    const d = tile.data as BuildingTileData;
+    const [v0, vc] = d.ranges.subarray(4 * index, 4 * index + 2);
+    const n = vc / 2;
+    for (let k = 0; k < n; k++) d.positions[(v0 + n + k) * 3 + 1] = roof[k];
+    d.bounds[5 * index + 4] = height;
+    const mesh = tile.object as THREE.Mesh;
+    const attr = mesh.geometry.getAttribute("position") as THREE.BufferAttribute;
+    attr.clearUpdateRanges();
+    attr.addUpdateRange((v0 + n) * 3, n * 3);
+    attr.needsUpdate = true;
+    tile.box = this.buildingBox(d, this.terrain ? (tile.bases ?? null) : null);
+    mesh.geometry.boundingBox = tile.box.clone();
+    mesh.geometry.boundingSphere = tile.box.getBoundingSphere(new THREE.Sphere());
+    // the highlight meshes are copies of the old shape
+    if (this.hover?.tile === tile && this.hover.index === index) this.setHover(null);
+    if (this.selected?.key === tile.key && this.selected.index === index) {
+      const sel = { key: this.selected.key, index };
+      this.setSelected(null);
+      this.setSelected(sel);
+    }
+  }
+
+  /** Where a ray meets the ground (terrain relief when on, else y = 0); null above the horizon. */
+  pickGround(ray: THREE.Ray): THREE.Vector3 | null {
+    if (ray.direction.y > -1e-6) return null;
+    const p = new THREE.Vector3();
+    let h = 0;
+    for (let i = 0; i < 8; i++) {
+      const t = (h - ray.origin.y) / ray.direction.y;
+      if (t < 0) return null;
+      ray.at(t, p);
+      const g = this.groundHeightAt(p.x, p.z);
+      if (g === null || Math.abs(g - h) < 0.05) break;
+      h = g;
+    }
+    p.y = h;
+    return p;
+  }
+
+  /** lat / lng box around a loaded building (with a small margin) */
+  buildingLngLatBox(key: string, index: number) {
+    const tile = this.tiles.building.get(key);
+    if (!tile || tile.state !== "ready") return null;
+    const b = (tile.data as BuildingTileData).bounds;
+    const sw = fromScene(this.origin, b[5 * index] - 2, b[5 * index + 3] + 2);
+    const ne = fromScene(this.origin, b[5 * index + 2] + 2, b[5 * index + 1] - 2);
+    return { south: sw.lat, west: sw.lng, north: ne.lat, east: ne.lng };
+  }
+
+  /** a loaded building by id (OSM way id, or negative for buildings added on map3d) */
+  findBuilding(id: number): { key: string; index: number } | null {
+    for (const t of this.tiles.building.values()) {
+      if (t.state !== "ready") continue;
+      const index = (t.data as BuildingTileData).ids.indexOf(id);
+      if (index >= 0) return { key: t.key, index };
+    }
+    return null;
+  }
+
+  private retryDelay(id: string) {
+    return Math.min(RETRY_MAX_MS, RETRY_FIRST_MS * 2 ** ((this.failures.get(id) ?? 1) - 1));
+  }
+
+  private retryDue(id: string, failedAt: number | undefined, now: number) {
+    return now - (failedAt ?? 0) >= this.retryDelay(id);
+  }
+
+  /**
+   * Count a failure and make sure a frame runs when its retry is due: the view renders on demand, so without
+   * this a tile that failed while nothing moved would stay missing until the next interaction.
+   */
+  private noteFailure(id: string) {
+    this.failures.set(id, (this.failures.get(id) ?? 0) + 1);
+    this.wakeIn(this.retryDelay(id) + 50);
+  }
+
+  /** one timer, set to the earliest wake-up asked for */
+  private wakeIn(ms: number) {
+    const at = performance.now() + ms;
+    if (this.retryTimer !== null) {
+      if (this.retryAt <= at) return;
+      clearTimeout(this.retryTimer);
+    }
+    this.retryAt = at;
+    this.retryTimer = window.setTimeout(() => {
+      this.retryTimer = null;
+      this.onChange();
+    }, ms);
+  }
+
+  /** after each frame: wake up again when the next failed load in view is due for its retry */
+  private scheduleRetries(now: number) {
+    let next = Infinity;
+    const due = (id: string, failedAt: number | undefined) => {
+      if (failedAt !== undefined) next = Math.min(next, failedAt + this.retryDelay(id) - now);
+    };
+    for (const key of this.wanted.keys()) {
+      for (const layer of ["building", "road"] as Layer[]) {
+        const t = this.tiles[layer].get(key);
+        if (t?.state === "error") due(`${layer}:${key}`, t.failedAt);
+        else if (t?.terrainState === "error") due(`terrain:${layer}:${key}`, t.terrainFailedAt);
+      }
+    }
+    for (const key of this.groundWanted) {
+      const gKey = `${this.terrain ? "t" : "f"}:${key}`;
+      const g = this.ground.get(gKey);
+      if (g?.state === "error") due(`ground:${gKey}`, g.failedAt);
+      const m = this.maps.get(key);
+      if (m?.state === "error") due(`map:${key}`, m.failedAt);
+    }
+    if (next < Infinity) this.wakeIn(Math.max(50, next + 50));
+  }
+
   retryFailed() {
+    this.failures.clear();
+    for (const map of Object.values(this.tiles)) for (const t of map.values()) if (t.terrainState === "error") t.terrainState = undefined;
     for (const map of Object.values(this.tiles)) for (const t of map.values()) if (t.state === "error") map.delete(t.key);
     for (const g of this.ground.values()) if (g.state === "error") this.ground.delete(g.key);
     this.onChange();

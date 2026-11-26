@@ -1,0 +1,6 @@
+# Copy to .dev.vars (git-ignored) for `npm run dev`. Values from the *development* GitHub OAuth App
+# (callback URL http://localhost:8787/auth/callback).
+GITHUB_CLIENT_ID=your-dev-oauth-app-client-id
+GITHUB_CLIENT_SECRET=your-dev-oauth-app-client-secret
+# your own numeric GitHub id, to see the admin view locally (https://api.github.com/users/<login> -> "id")
+ADMIN_GITHUB_IDS=

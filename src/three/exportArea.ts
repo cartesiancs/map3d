@@ -102,7 +102,8 @@ export async function exportAreaGLB(bbox: BBox, options: ExportOptions, fileName
     }
     const mesh = new THREE.Mesh(geometry, material);
     mesh.rotation.x = -Math.PI / 2;
-    mesh.name = `way_${f.id}`; // OSM way id ("/" is rewritten by several glTF loaders)
+    // OSM way id ("/" is rewritten by several glTF loaders); buildings added on map3d have negative ids
+    mesh.name = f.id < 0 ? `map3d_new_${-f.id}` : `way_${f.id}`;
     root.add(mesh);
   }
 

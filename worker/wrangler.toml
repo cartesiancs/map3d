@@ -1,0 +1,34 @@
+# map3d API: GitHub sign-in and sessions (phase 1 of CONTRIBUTION-DESIGN.md).
+# Secrets are never in this file: `npx wrangler secret put GITHUB_CLIENT_SECRET` (production),
+# `.dev.vars` (local, git-ignored; see .dev.vars.example).
+
+name = "map3d-api"
+main = "src/index.ts"
+compatibility_date = "2026-11-01"
+
+# Production custom domain (same Cloudflare zone as cdn.map3d.fleet.im). Uncomment for the first deploy.
+routes = [{ pattern = "api.map3d.fleet.im", custom_domain = true }]
+
+[vars]
+# Pages that may call the API with credentials (exact origins, comma-separated).
+APP_ORIGINS = "https://map.fleet.im,http://localhost:5173"
+# Numeric GitHub user ids of the admins (comma-separated). Login names can change; ids cannot.
+ADMIN_GITHUB_IDS = "48173908"
+# GitHub OAuth App client id (public). Local development overrides it in .dev.vars with the dev app's id.
+GITHUB_CLIENT_ID = "Ov23lio4BF0zXcTl1cXZ"
+SESSION_DAYS = "30"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "map3d"
+# from `npx wrangler d1 create map3d`
+database_id = "9604de1d-c4f2-4aa2-847d-53121d723f39"
+migrations_dir = "migrations"
+
+# The map data bucket: approved edits are published to overlay/ (served by the CDN like the tiles).
+[[r2_buckets]]
+binding = "DATA"
+bucket_name = "map3d-osm"
+
+[observability]
+enabled = true

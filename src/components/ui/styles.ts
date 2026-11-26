@@ -1,14 +1,40 @@
 import { css, keyframes } from "@emotion/react";
 
+/** Colors are CSS variables (index.css): the light and dark themes switch them all at once. */
 export const UI = {
-  surface: "#ececef",
-  surfaceHover: "#e2e2e6",
-  text: "#3a3a3f",
-  icon: "#5b5d63",
-  placeholder: "#9d9da3",
-  handle: "#b4b4ba",
-  accent: "#3d83f7",
-  accentHover: "#2f74e6",
+  bg: "var(--m3-bg)",
+  surface: "var(--m3-surface)",
+  surfaceHover: "var(--m3-surface-hover)",
+  text: "var(--m3-text)",
+  icon: "var(--m3-icon)",
+  placeholder: "var(--m3-placeholder)",
+  handle: "var(--m3-handle)",
+  accent: "var(--m3-accent)",
+  accentHover: "var(--m3-accent-hover)",
+  /** separators, track of segmented controls */
+  line: "var(--m3-line)",
+  /** secondary buttons */
+  control: "var(--m3-control)",
+  controlOff: "var(--m3-control-off)",
+  /** selected segment */
+  raised: "var(--m3-raised)",
+  knob: "var(--m3-knob)",
+  field: "var(--m3-field)",
+  fieldBorder: "var(--m3-field-border)",
+  card: "var(--m3-card)",
+  menu: "var(--m3-menu)",
+  menuBorder: "var(--m3-menu-border)",
+  menuHover: "var(--m3-menu-hover)",
+  muted: "var(--m3-muted)",
+  shadow: "var(--m3-shadow)",
+  shadowStrong: "var(--m3-shadow-strong)",
+  scrim: "var(--m3-scrim)",
+  floating: "var(--m3-floating)",
+  halo: "var(--m3-halo)",
+  danger: "var(--m3-danger)",
+  warn: "var(--m3-warn)",
+  pendingBg: "var(--m3-pending-bg)",
+  pendingFg: "var(--m3-pending-fg)",
   barHeight: 34,
   top: 31,
   side: 26,
@@ -54,5 +80,5 @@ export const primaryButton = css(pillButton, {
 export const panel = css({
   backgroundColor: UI.surface,
   color: UI.text,
-  boxShadow: "0 8px 30px rgba(0, 0, 0, 0.06)",
+  boxShadow: `0 8px 30px ${UI.shadow}`,
 });

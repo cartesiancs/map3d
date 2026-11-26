@@ -1,6 +1,13 @@
 import { css } from "@emotion/react";
 import { useViewStore } from "@/state/viewStore";
-import { UI, mobile, panel } from "./styles";
+import { Ruler } from "lucide-react";
+import { UI, iconSize, mobile, panel, pillButton } from "./styles";
+import { pendingFor, useContribStore } from "@/state/contribStore";
+import { useAuthStore } from "@/state/authStore";
+import { describeProposal, refOf } from "@/api/contributions";
+import { tileManager } from "@/three/Space";
+import { fromScene } from "@/three/tiles/geo";
+import { useLastValue, useSwipeDown } from "./usePanel";
 import { englishName, isEnglishText, isForeignNameKey } from "@/utils/english";
 
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
@@ -16,6 +23,13 @@ const FACTS: [key: string, label: string, format?: (v: string) => string][] = [
   ["operator", "Operator"],
 ];
 const SHOWN = new Set(["name", "description", "source", ...FACTS.map(([k]) => k)]);
+
+/** Where the building comes from: OSM, an approved edit of it, or added on map3d (negative id) */
+function source(id: number | undefined, tags: Record<string, string>) {
+  if (id === undefined) return "";
+  if (id < 0) return "Added on map3d";
+  return tags["map3d:edited"] ? `OSM way ${id} · edited on map3d` : `OSM way ${id}`;
+}
 
 /** English only: address parts in another script are left out */
 function address(tags: Record<string, string>) {
@@ -42,13 +56,23 @@ function Row({ label, value }: { label: string; value: string }) {
 }
 
 export function BuildingPanel() {
-  const selected = useViewStore((s) => s.selected);
+  const current = useViewStore((s) => s.selected);
+  // while the panel fades out it keeps showing the building it showed
+  const selected = useLastValue(current);
   const select = useViewStore((s) => s.select);
+  // Set height… takes the same place while open
+  const editing = useContribStore((s) => s.heightEdit !== null);
+  const mine = useContribStore((s) => s.mine);
+  const signedIn = useAuthStore((s) => s.status === "signedIn");
+  const open = !!current && !editing;
+  const close = () => select(null);
+  const swipe = useSwipeDown<HTMLElement>(close);
+  const pending = selected ? pendingFor(mine, refOf(selected.id)) : undefined;
   const tags = selected?.tags ?? {};
   const addr = address(tags);
   // English only: other-language names and values in other scripts are never shown
   const others = Object.entries(tags).filter(
-    ([k, v]) => !SHOWN.has(k) && !k.startsWith("addr:") && !isForeignNameKey(k) && !isOtherLanguageKey(k) && isEnglishText(v),
+    ([k, v]) => !SHOWN.has(k) && !k.startsWith("addr:") && !k.startsWith("map3d:") && !isForeignNameKey(k) && !isOtherLanguageKey(k) && isEnglishText(v),
   );
   const name = englishName(tags);
   const title = name ?? (addr || "Building");
@@ -56,8 +80,9 @@ export function BuildingPanel() {
 
   return (
     <aside
+      ref={swipe.ref}
       aria-label="Building information"
-      aria-hidden={!selected}
+      aria-hidden={!open}
       css={[
         panel,
         css({
@@ -73,9 +98,9 @@ export function BuildingPanel() {
           display: "flex",
           flexDirection: "column",
           transition: "opacity .2s, transform .2s",
-          opacity: selected ? 1 : 0,
-          transform: selected ? "none" : "translateX(24px)",
-          pointerEvents: selected ? "auto" : "none",
+          opacity: open ? 1 : 0,
+          transform: open ? "none" : "translateX(24px)",
+          pointerEvents: open ? "auto" : "none",
           [mobile]: {
             top: "auto",
             left: 12,
@@ -83,20 +108,25 @@ export function BuildingPanel() {
             bottom: 12,
             width: "auto",
             maxHeight: "55vh",
-            transform: selected ? "none" : "translateY(24px)",
+            transform: open ? "none" : "translateY(24px)",
           },
         }),
       ]}
     >
+      {/* drag down to close (touch: the whole header; mouse: the handle), or tap the handle */}
+      <div {...swipe.handlers} css={css({ flexShrink: 0, display: "flex", flexDirection: "column", touchAction: "none" })}>
       <button
         aria-label="Close"
-        onClick={() => select(null)}
+        data-drag-handle
+        onClick={close}
         css={css({
           alignSelf: "center",
+          touchAction: "none",
+          cursor: "grab",
+          ":active": { cursor: "grabbing" },
           border: "none",
           background: "transparent",
           padding: "14px 20px 0",
-          cursor: "pointer",
           flexShrink: 0,
           "::before": {
             content: '""',
@@ -108,9 +138,12 @@ export function BuildingPanel() {
           },
         })}
       />
-      <div css={css({ overflowY: "auto", paddingTop: 36, userSelect: "text", [mobile]: { paddingTop: 20 } })}>
+      <div css={css({ paddingTop: 36, userSelect: "text", [mobile]: { paddingTop: 20 } })}>
         <h2 css={css({ margin: 0, fontSize: 24, fontWeight: 600, lineHeight: 1.25, wordBreak: "break-word" })}>{title}</h2>
         {name && addr && <p css={css({ margin: "6px 0 0", fontSize: 14, color: UI.icon })}>{addr}</p>}
+      </div>
+      </div>
+      <div css={css({ overflowY: "auto", userSelect: "text", minHeight: 0 })}>
         {description && <p css={css({ margin: "20px 0 0", fontSize: 16, lineHeight: 1.2 })}>{description}</p>}
 
         <div css={css({ marginTop: 22 })}>
@@ -132,7 +165,23 @@ export function BuildingPanel() {
             ))}
           </details>
         )}
-        <p css={css({ margin: "24px 0 0", fontSize: 12, color: UI.placeholder })}>OSM way {selected?.id}</p>
+        {pending && (
+          <p css={css({ margin: "20px 0 0", fontSize: 13, color: UI.pendingFg })}>Your proposal ({describeProposal(pending)}) is waiting for review.</p>
+        )}
+        {signedIn && selected && (
+          <button
+            onClick={() => {
+              const info = tileManager.describe(selected.key, selected.index);
+              if (!info) return;
+              const ll = fromScene(tileManager.origin, info.center.x, info.center.z);
+              useContribStore.getState().startHeightEdit({ ...selected, lat: ll.lat, lng: ll.lng, height: info.height });
+            }}
+            css={[pillButton, css({ marginTop: 18, padding: "0 14px", fontSize: 14, fontWeight: 600, color: UI.text, backgroundColor: UI.control, gap: 6, [mobile]: { display: "none" } })]}
+          >
+            <Ruler css={iconSize(15)} /> {pending ? "Edit my proposal" : "Set height…"}
+          </button>
+        )}
+        <p css={css({ margin: "24px 0 0", fontSize: 12, color: UI.placeholder })}>{source(selected?.id, tags)}</p>
       </div>
     </aside>
   );

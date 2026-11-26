@@ -7,7 +7,9 @@
 // A query reads the tiles covering the bbox and keeps the features that have a vertex inside the bbox or a
 // segment crossing it, which matches what Overpass returns for `way[...](bbox)` / `relation[...](bbox)`.
 
-import { EtagMismatch, FetchSource, PMTiles, SharedPromiseCache } from "pmtiles";
+import { EtagMismatch, FetchSource, PMTiles, RangeResponse, SharedPromiseCache, Source } from "pmtiles";
+import { fetchRetry, isTransient, withRetry } from "./retry";
+import { OverlayTile, fetchOverlayTile, overlayIndexCached } from "./overlay";
 import { ArchiveRpc, CachingSource, IN_WORKER, RemoteCache, RpcReply, callMain } from "./pmtilesShared";
 
 const DATA_URL = (import.meta.env.VITE_OSM_DATA_URL ?? "https://cdn.map3d.fleet.im").replace(/\/+$/, "");
@@ -30,6 +32,23 @@ export type OsmFeature = {
 type Manifest = { version: string; buildings: string; roads: string; osmTimestamp: string; water?: string };
 type TileFeature = { t: "w" | "r"; id: number; tags: Record<string, string>; g: number[][][] };
 
+/** PMTiles range reads with retries of transient failures (an ETag change is left to PMTiles, which reloads) */
+class RetrySource implements Source {
+  private inner: FetchSource;
+  constructor(url: string) {
+    this.inner = new FetchSource(url);
+  }
+  getKey() {
+    return this.inner.getKey();
+  }
+  getBytes(offset: number, length: number, signal?: AbortSignal, etag?: string): Promise<RangeResponse> {
+    return withRetry(
+      () => this.inner.getBytes(offset, length, signal, etag),
+      (err) => !(err instanceof EtagMismatch) && !signal?.aborted && isTransient(err),
+    );
+  }
+}
+
 type Archives = { buildings: PMTiles; roads: PMTiles; water: PMTiles | null; manifest: Manifest };
 let archives: Promise<Archives> | null = null;
 
@@ -41,15 +60,16 @@ const remoteCache = IN_WORKER ? new RemoteCache() : null;
 
 function loadManifest(): Promise<Manifest> {
   if (IN_WORKER) return callMain<Manifest>({ op: "manifest" });
-  return fetch(`${DATA_URL}/manifest.json`).then((res) => {
+  return fetchRetry(`${DATA_URL}/manifest.json`).then((res) => {
     if (!res.ok) throw new Error(`OSM manifest: HTTP ${res.status}`);
     return res.json() as Promise<Manifest>;
   });
 }
 
+/** retries inside, cached tile bytes outside: a retried read is cached once it succeeds */
 function openArchive(file: string) {
   const url = `${DATA_URL}/${file}`;
-  const source = new CachingSource(new FetchSource(url));
+  const source = new CachingSource(new RetrySource(url));
   if (remoteCache) return new PMTiles(source, remoteCache);
   mainSources.set(url, source);
   return new PMTiles(source, mainCache!);
@@ -155,7 +175,25 @@ function partsIntersectBBox(parts: Ring[][], b: BBox) {
   return false;
 }
 
-async function queryArchive(archive: PMTiles, bbox: BBox): Promise<OsmFeature[]> {
+/** Edits of the tiles around the bbox (one ring wider: buildings reach into neighbouring tiles). */
+async function overlayFor(bbox: BBox): Promise<OverlayTile> {
+  const index = await overlayIndexCached();
+  const n = 2 ** ZOOM;
+  const x0 = Math.floor(lonToTileX(bbox.west)) - 1, x1 = Math.floor(lonToTileX(bbox.east)) + 1;
+  const y0 = Math.floor(latToTileY(bbox.north)) - 1, y1 = Math.floor(latToTileY(bbox.south)) + 1;
+  const jobs: Promise<OverlayTile>[] = [];
+  for (let x = Math.max(0, x0); x <= Math.min(n - 1, x1); x++) {
+    for (let y = Math.max(0, y0); y <= Math.min(n - 1, y1); y++) {
+      const rev = index.tiles[`${x}/${y}`];
+      if (rev !== undefined) jobs.push(fetchOverlayTile(x, y, rev));
+    }
+  }
+  const tiles = await Promise.all(jobs);
+  return { hide: tiles.flatMap((t) => t.hide), add: tiles.flatMap((t) => t.add) };
+}
+
+async function queryArchive(archive: PMTiles, bbox: BBox, overlay: OverlayTile | null = null): Promise<OsmFeature[]> {
+  const hidden = new Set(overlay?.hide ?? []);
   const n = 2 ** ZOOM;
   const clamp = (v: number) => Math.max(0, Math.min(n - 1, v));
   const xMin = clamp(Math.floor(lonToTileX(bbox.west)));
@@ -176,6 +214,7 @@ async function queryArchive(archive: PMTiles, bbox: BBox): Promise<OsmFeature[]>
       if (!tile) continue;
       const { f } = JSON.parse(decoder.decode(tile.data)) as { f: TileFeature[] };
       for (const feat of f) {
+        if (feat.t === "w" && hidden.has(feat.id)) continue; // replaced by an approved edit
         const key = feat.t + feat.id;
         if (seen.has(key)) continue; // unclipped: the same copy is in every tile it touches
         const parts = feat.g.map((part) => part.map(decodeRing));
@@ -187,6 +226,13 @@ async function queryArchive(archive: PMTiles, bbox: BBox): Promise<OsmFeature[]>
     }
   }
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, coords.length) }, worker));
+  // approved edits and new buildings, same rule as the OSM features
+  for (const feat of overlay?.add ?? []) {
+    const key = feat.t + feat.id;
+    if (seen.has(key)) continue;
+    const parts = feat.g.map((part) => part.map(decodeRing));
+    seen.set(key, partsIntersectBBox(parts, bbox) ? { type: feat.t === "w" ? "way" : "relation", id: feat.id, tags: feat.tags, parts } : null);
+  }
 
   // Overpass order: ways before relations, each by ascending id
   return [...seen.values()]
@@ -194,9 +240,10 @@ async function queryArchive(archive: PMTiles, bbox: BBox): Promise<OsmFeature[]>
     .sort((a, b) => (a.type === b.type ? a.id - b.id : a.type === "way" ? -1 : 1));
 }
 
-/** Same result as Overpass `(way["building"](bbox); relation["building"](bbox););` */
+/** Same result as Overpass `(way["building"](bbox); relation["building"](bbox););`, with approved edits applied */
 export async function fetchBuildings(bbox: BBox) {
-  return queryArchive((await getArchives()).buildings, bbox);
+  const [archives, overlay] = await Promise.all([getArchives(), overlayFor(bbox)]);
+  return queryArchive(archives.buildings, bbox, overlay);
 }
 
 /** Same result as Overpass `way["highway"](bbox);` */

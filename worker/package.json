@@ -1,0 +1,18 @@
+{
+  "name": "map3d-api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --port 8787 --persist-to .wrangler/state",
+    "db:migrate:local": "wrangler d1 migrations apply map3d --local --persist-to .wrangler/state",
+    "db:migrate:remote": "wrangler d1 migrations apply map3d --remote",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test:e2e": "node test/e2e.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261125.1",
+    "typescript": "~5.7.2",
+    "wrangler": "4.168.0"
+  }
+}

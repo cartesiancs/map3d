@@ -1,6 +1,7 @@
 import { css } from "@emotion/react";
 import { useViewStore } from "@/state/viewStore";
 import { useAreaStore } from "@/state/areaStore";
+import { ThemeChoice, useThemeStore } from "@/state/theme";
 import { PerfLevel } from "@/three/tiles/levels";
 import { UI, mobile, panel } from "./styles";
 
@@ -21,7 +22,7 @@ function Toggle({ label, hint, checked, onChange }: { label: string; hint?: stri
           width: 40,
           height: 24,
           borderRadius: 12,
-          backgroundColor: checked ? UI.accent : "#cfcfd4",
+          backgroundColor: checked ? UI.accent : UI.controlOff,
           position: "relative",
           cursor: "pointer",
           transition: "background-color .15s",
@@ -35,7 +36,7 @@ function Toggle({ label, hint, checked, onChange }: { label: string; hint?: stri
             width: 18,
             height: 18,
             borderRadius: 9,
-            backgroundColor: "#ffffff",
+            backgroundColor: UI.knob,
             transition: "left .15s",
           },
         })}
@@ -56,24 +57,19 @@ const LEVEL_HINT: Record<PerfLevel, string> = {
   high: "Farthest view distance, sharpest image",
 };
 
-function PerformancePicker() {
-  const level = useViewStore((s) => s.level);
-  const setLevel = useViewStore((s) => s.setLevel);
+/** a row of options, one selected (performance, appearance) */
+function Segmented<T extends string>({ label, hint, options, value, onChange }: { label: string; hint?: string; options: { value: T; label: string }[]; value: T; onChange: (v: T) => void }) {
   return (
     <div>
-      <span css={css({ display: "block", fontSize: 15, fontWeight: 600 })}>Performance</span>
-      <span css={css({ display: "block", fontSize: 12, color: UI.icon, marginTop: 2 })}>{LEVEL_HINT[level]}</span>
-      <div
-        role="radiogroup"
-        aria-label="Performance"
-        css={css({ display: "flex", marginTop: 10, padding: 3, borderRadius: 12, backgroundColor: "#dcdce1" })}
-      >
-        {LEVEL_OPTIONS.map((o) => (
+      <span css={css({ display: "block", fontSize: 15, fontWeight: 600 })}>{label}</span>
+      {hint && <span css={css({ display: "block", fontSize: 12, color: UI.icon, marginTop: 2 })}>{hint}</span>}
+      <div role="radiogroup" aria-label={label} css={css({ display: "flex", marginTop: 10, padding: 3, borderRadius: 12, backgroundColor: UI.line })}>
+        {options.map((o) => (
           <button
             key={o.value}
             role="radio"
-            aria-checked={level === o.value}
-            onClick={() => setLevel(o.value)}
+            aria-checked={value === o.value}
+            onClick={() => onChange(o.value)}
             css={css({
               flex: 1,
               height: 30,
@@ -82,9 +78,9 @@ function PerformancePicker() {
               cursor: "pointer",
               fontSize: 13,
               fontWeight: 600,
-              color: level === o.value ? UI.text : UI.icon,
-              backgroundColor: level === o.value ? "#ffffff" : "transparent",
-              boxShadow: level === o.value ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
+              color: value === o.value ? UI.text : UI.icon,
+              backgroundColor: value === o.value ? UI.raised : "transparent",
+              boxShadow: value === o.value ? `0 1px 3px ${UI.shadowStrong}` : "none",
               transition: "background-color .15s",
             })}
           >
@@ -94,6 +90,24 @@ function PerformancePicker() {
       </div>
     </div>
   );
+}
+
+function PerformancePicker() {
+  const level = useViewStore((s) => s.level);
+  const setLevel = useViewStore((s) => s.setLevel);
+  return <Segmented label="Performance" hint={LEVEL_HINT[level]} options={LEVEL_OPTIONS} value={level} onChange={setLevel} />;
+}
+
+const THEME_OPTIONS: { value: ThemeChoice; label: string }[] = [
+  { value: "system", label: "System" },
+  { value: "light", label: "Light" },
+  { value: "dark", label: "Dark" },
+];
+
+function AppearancePicker() {
+  const choice = useThemeStore((s) => s.choice);
+  const setChoice = useThemeStore((s) => s.setChoice);
+  return <Segmented label="Appearance" options={THEME_OPTIONS} value={choice} onChange={setChoice} />;
 }
 
 export function SettingsPanel({ open }: { open: boolean }) {
@@ -134,6 +148,7 @@ export function SettingsPanel({ open }: { open: boolean }) {
       ]}
     >
       <PerformancePicker />
+      <AppearancePicker />
       <Toggle label="Terrain" hint="Elevation under buildings and roads" checked={terrain} onChange={setTerrain} />
       <Toggle label="Ground map" hint="Land and sea on the ground" checked={groundMap} onChange={setGroundMap} />
       <Toggle label="Roads" hint="Show the road network" checked={showRoads} onChange={setShowRoads} />

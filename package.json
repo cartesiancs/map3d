@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",
+    "@radix-ui/react-context-menu": "2.2.15",
     "@react-three/drei": "^10.0.2",
     "@react-three/fiber": "^9.0.4",
     "@types/three": "^0.173.0",

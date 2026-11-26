@@ -1,8 +1,10 @@
 import { css } from "@emotion/react";
-import { Download, Github, Loader2, LocateFixed, Minus, Plus, Search, Settings, X } from "lucide-react";
+import { Download, Github, Inbox, ListChecks, Loader2, LocateFixed, LogIn, LogOut, Minus, Plus, Search, Settings, ShieldCheck, User, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { NamedBuilding, useAreaStore } from "@/state/areaStore";
 import { useViewStore } from "@/state/viewStore";
+import { useAuthStore } from "@/state/authStore";
+import { useContribStore } from "@/state/contribStore";
 import { City, loadCities, nearestCity, normalize, searchCities } from "@/data/cities";
 import { goToPlace } from "@/three/Space";
 import { UI, iconSize, mobile, pillButton, primaryButton, panel, spin } from "./styles";
@@ -103,6 +105,8 @@ function SearchBox() {
             transition: "width .15s",
             userSelect: "text",
             "::placeholder": { color: UI.placeholder },
+            // iOS Safari zooms the page into any focused field under 16px
+            [mobile]: { fontSize: 16, width: query ? "100%" : 60 },
           })}
         />
       </label>
@@ -260,6 +264,159 @@ function LocateButton() {
   );
 }
 
+/**
+ * GitHub account: "Sign in" when signed out, the avatar (menu: name, Admin badge, Sign out) when signed in.
+ * Hidden while the account service cannot be reached.
+ */
+const menuItem = css({
+  width: "100%",
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  border: "none",
+  background: "transparent",
+  borderRadius: 10,
+  padding: "8px 10px",
+  fontSize: 14,
+  color: UI.text,
+  cursor: "pointer",
+  ":hover": { backgroundColor: UI.surfaceHover },
+});
+
+const countBadge = css({
+  marginLeft: "auto",
+  minWidth: 20,
+  padding: "0 6px",
+  boxSizing: "border-box",
+  borderRadius: 10,
+  backgroundColor: UI.accent,
+  color: "#ffffff",
+  fontSize: 12,
+  fontWeight: 600,
+  lineHeight: "20px",
+  textAlign: "center",
+});
+
+function AccountButton() {
+  const { status, user, notice, signIn, signOut, clearNotice } = useAuthStore();
+  const setPanel = useContribStore((s) => s.setPanel);
+  const queueSize = useContribStore((s) => s.queue.length);
+  const [open, setOpen] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!notice) return;
+    const t = window.setTimeout(clearNotice, 4000);
+    return () => clearTimeout(t);
+  }, [notice, clearNotice]);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: PointerEvent) => !box.current?.contains(e.target as Node) && setOpen(false);
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("keydown", esc);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("keydown", esc);
+    };
+  }, [open]);
+
+  if (status === "unknown" || status === "unavailable") return null;
+
+  return (
+    <div ref={box} css={css({ position: "relative" })}>
+      {status === "signedIn" && user ? (
+        <button
+          css={[pillButton, css({ overflow: "hidden" }), open && css({ backgroundColor: UI.surfaceHover })]}
+          aria-label={`Account @${user.login}`}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          onClick={() => setOpen((v) => !v)}
+        >
+          {user.avatarUrl ? (
+            <img src={user.avatarUrl} alt="" width={34} height={34} css={css({ width: 34, height: 34, borderRadius: 17, display: "block" })} />
+          ) : (
+            <User css={iconSize(17)} />
+          )}
+        </button>
+      ) : (
+        <button
+          css={[pillButton, css({ padding: "0 14px 0 12px", fontSize: 14, fontWeight: 600, color: UI.text, [mobile]: { padding: 0, width: UI.barHeight } })]}
+          aria-label="Sign in with GitHub"
+          title="Sign in with GitHub"
+          onClick={signIn}
+        >
+          <LogIn css={iconSize(16)} />
+          <span css={css({ [mobile]: { display: "none" } })}>Sign in</span>
+        </button>
+      )}
+
+      {open && user && (
+        <div
+          role="menu"
+          css={[panel, css({ position: "absolute", top: UI.barHeight + 8, right: 0, width: 220, borderRadius: 16, padding: 6, zIndex: 40 })]}
+        >
+          <div css={css({ padding: "8px 10px 10px", borderBottom: `1px solid ${UI.line}`, marginBottom: 4 })}>
+            <div css={css({ fontSize: 14, fontWeight: 600 })}>@{user.login}</div>
+            <div css={css({ fontSize: 12, color: UI.icon, marginTop: 2, display: "flex", alignItems: "center", gap: 4 })}>
+              {user.isAdmin ? (
+                <>
+                  <ShieldCheck css={iconSize(13)} /> Admin
+                </>
+              ) : (
+                "Contributor"
+              )}
+            </div>
+          </div>
+          <button
+            role="menuitem"
+            css={menuItem}
+            onClick={() => {
+              setOpen(false);
+              setPanel("mine");
+            }}
+          >
+            <ListChecks css={iconSize(15)} /> My contributions
+          </button>
+          {user.isAdmin && (
+            <button
+              role="menuitem"
+              css={menuItem}
+              onClick={() => {
+                setOpen(false);
+                setPanel("review");
+              }}
+            >
+              <Inbox css={iconSize(15)} /> Review queue
+              {queueSize > 0 && <span css={countBadge}>{queueSize}</span>}
+            </button>
+          )}
+          <button
+            role="menuitem"
+            css={menuItem}
+            onClick={() => {
+              setOpen(false);
+              signOut();
+            }}
+          >
+            <LogOut css={iconSize(15)} /> Sign out
+          </button>
+        </div>
+      )}
+
+      {notice && !open && (
+        <div
+          role="status"
+          css={[panel, css({ position: "absolute", top: UI.barHeight + 8, right: 0, whiteSpace: "nowrap", padding: "8px 14px", borderRadius: 14, fontSize: 13, fontWeight: 500 })]}
+        >
+          {notice}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function TopBar({
   settingsOpen,
   onToggleSettings,
@@ -331,6 +488,7 @@ export function TopBar({
         >
           <Github css={iconSize(18)} />
         </button>
+        <AccountButton />
         <button
           css={[primaryButton, css({ [mobile]: { padding: 0, width: UI.barHeight } })]}
           aria-label={downloadOpen ? "Close" : "Download"}

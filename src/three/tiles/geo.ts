@@ -56,8 +56,13 @@ export function tileYfToLat(y: number, z: number) {
   return (180 / Math.PI) * Math.atan(Math.sinh(n));
 }
 
-/** Height rule kept from the original app: building:levels × 2.2 wins over height, default 10. */
+/**
+ * Height rule kept from the original app: building:levels × 2.2 wins over height, default 10.
+ * An approved map3d edit that sets the height (map3d:height) wins over both.
+ */
 export function buildingHeight(tags: Record<string, string>) {
+  const edited = parseFloat(tags["map3d:height"] || "");
+  if (!isNaN(edited)) return edited;
   let height = parseFloat(tags.height || "");
   const levels = parseFloat(tags["building:levels"] || "");
   if (isNaN(height)) height = 10;
