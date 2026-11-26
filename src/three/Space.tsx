@@ -17,6 +17,7 @@ import { fetchOverlayIndex } from "@/api/overlay";
 export const tileManager = new TileManager(ORIGIN, LEVELS[useViewStore.getState().level]);
 tileManager.setTheme(useThemeStore.getState().dark);
 tileManager.onStats = (stats) => useAreaStore.getState().setStats(stats);
+tileManager.onProgress = (progress) => useAreaStore.getState().setProgress(progress);
 tileManager.onCenter = (center) => useAreaStore.getState().setCenter(center);
 tileManager.onNamed = (tiles) => {
   const named: NamedBuilding[] = [];
@@ -411,7 +412,7 @@ function CameraRig() {
 function DevHook() {
   const get = useThree((s) => s.get);
   useEffect(() => {
-    if (import.meta.env.DEV) Object.assign(window as any, { __r3f: { get }, __tiles: tileManager, __areaStore: useAreaStore, __viewStore: useViewStore });
+    if (import.meta.env.DEV) Object.assign(window as any, { __r3f: { get }, __tiles: tileManager, __areaStore: useAreaStore, __viewStore: useViewStore, __goToPlace: goToPlace });
   }, [get]);
   return null;
 }

@@ -9,6 +9,7 @@ import { DownloadMap } from "@/components/ui/DownloadMap";
 import { MapContextMenu } from "@/components/ui/MapContextMenu";
 import { HeightEditor } from "@/components/ui/HeightEditor";
 import { ContributionsPanel } from "@/components/ui/ContributionsPanel";
+import { LoadProgress } from "@/components/ui/LoadProgress";
 import { UI, iconSize, spin } from "@/components/ui/styles";
 import { START_VIEW, useAreaStore } from "@/state/areaStore";
 import { useViewStore } from "@/state/viewStore";
@@ -183,6 +184,8 @@ function App() {
       />
       <StatusPill />
 
+      {/* bottom edge, one row: the loading ring in the bottom left corner, the credits on the right. The ring keeps
+          its place while hidden, so the credits never reflow, and they wrap beside it (phones) instead of under it. */}
       <div
         css={css({
           position: "fixed",
@@ -190,15 +193,26 @@ function App() {
           bottom: 6,
           left: 10,
           zIndex: 10,
-          fontSize: 11,
-          lineHeight: 1.4,
-          textAlign: "right",
-          color: UI.icon,
-          textShadow: `0 0 3px ${UI.halo}`,
+          display: "flex",
+          alignItems: "flex-end",
+          gap: 8,
           pointerEvents: "none",
         })}
       >
-        <Attribution />
+        <LoadProgress />
+        <div
+          css={css({
+            flex: 1,
+            minWidth: 0,
+            fontSize: 11,
+            lineHeight: 1.4,
+            textAlign: "right",
+            color: UI.icon,
+            textShadow: `0 0 3px ${UI.halo}`,
+          })}
+        >
+          <Attribution />
+        </div>
       </div>
     </div>
   );

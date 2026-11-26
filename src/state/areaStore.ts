@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { BBox } from "@/api/osmSource";
+import type { LoadProgress } from "@/three/tiles/TileManager";
 import { makeOrigin } from "@/three/tiles/geo";
 import { loadLastView } from "./lastView";
 
@@ -20,19 +21,24 @@ type AreaStore = {
   /** lat/lng under the camera target */
   center: { lat: number; lng: number };
   stats: { tiles: number; buildings: number; loading: number; failed: number };
+  /** of the tiles the view needs, how many are drawn (the loading ring) */
+  progress: LoadProgress;
   /** named buildings in the loaded tiles (for search) */
   named: NamedBuilding[];
 
   setCenter: (center: { lat: number; lng: number }) => void;
   setStats: (stats: AreaStore["stats"]) => void;
+  setProgress: (progress: LoadProgress) => void;
   setNamed: (named: NamedBuilding[]) => void;
 };
 
 export const useAreaStore = create<AreaStore>((set) => ({
   center: { lat: ORIGIN.lat, lng: ORIGIN.lng },
   stats: { tiles: 0, buildings: 0, loading: 0, failed: 0 },
+  progress: { done: 0, total: 0 },
   named: [],
   setCenter: (center) => set({ center }),
   setStats: (stats) => set({ stats }),
+  setProgress: (progress) => set({ progress }),
   setNamed: (named) => set({ named }),
 }));
