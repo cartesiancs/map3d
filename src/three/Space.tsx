@@ -4,9 +4,11 @@ import { Environment, MapControls, PerformanceMonitor } from "@react-three/drei"
 import * as THREE from "three";
 import { DEFAULT_AREA, NamedBuilding, ORIGIN, useAreaStore } from "@/state/areaStore";
 import { useViewStore } from "@/state/viewStore";
+import { useContribStore } from "@/state/contribStore";
 import { LEVELS } from "./tiles/levels";
 import { TileManager } from "./tiles/TileManager";
 import { fromScene, toScene } from "./tiles/geo";
+import { fetchOverlayIndex } from "@/api/overlay";
 
 const BACKGROUND = "#f6f7f8";
 
@@ -23,6 +25,34 @@ tileManager.onNamed = (tiles) => {
   }
   useAreaStore.getState().setNamed(named);
 };
+// a tile rebuilt with new edits renumbers its buildings: an open selection there would point at another one
+tileManager.onReplaced = (keys) => {
+  const view = useViewStore.getState();
+  if (view.selected && keys.includes(view.selected.key)) view.select(null);
+};
+
+/** approved edits: poll the overlay index (changed tiles reload) */
+const OVERLAY_POLL_MS = 120_000;
+let overlayRev = -1;
+let overlayFetching = false;
+export async function refreshOverlay() {
+  if (overlayFetching) return;
+  overlayFetching = true;
+  try {
+    const index = await fetchOverlayIndex();
+    if (!index) {
+      // unreachable: keep the edits already shown; before the first index, show the OSM data meanwhile
+      if (overlayRev < 0) tileManager.setOverlay({});
+      return;
+    }
+    if (index.rev !== overlayRev) {
+      overlayRev = index.rev;
+      tileManager.setOverlay(index.tiles);
+    }
+  } finally {
+    overlayFetching = false;
+  }
+}
 
 /**
  * Show a place: fly there, or (more than ~44 km away) rebuild the scene around it and jump, instead of
@@ -74,6 +104,17 @@ function TileLayer() {
       scene.fog = null;
     };
   }, [scene, gl, invalidate]);
+
+  useEffect(() => {
+    refreshOverlay();
+    const timer = window.setInterval(refreshOverlay, OVERLAY_POLL_MS);
+    const onVisible = () => document.visibilityState === "visible" && refreshOverlay();
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, []);
 
   useEffect(() => {
     tileManager.setConfig(LEVELS[level]);
@@ -133,16 +174,21 @@ function TileLayer() {
   return <primitive object={tileManager.group} />;
 }
 
-/** Hover highlight (mouse only) and click-to-select, with ray picking on per-building boxes. */
+/**
+ * Hover highlight (mouse only), click-to-select and the right-click menu, with ray picking on per-building
+ * boxes. A right-button drag rotates the view: the menu opens only for a short right click that did not move
+ * (the native contextmenu event fires on press on macOS, so it is not used).
+ */
 function Picker() {
   const { gl, camera, invalidate } = useThree();
+  const controls = useThree((s) => s.controls) as unknown as Controls | null;
   const select = useViewStore((s) => s.select);
 
   useEffect(() => {
     const el = gl.domElement;
     const raycaster = new THREE.Raycaster();
     const ndc = new THREE.Vector2();
-    let down: { x: number; y: number; t: number } | null = null;
+    let down: { x: number; y: number; t: number; button: number; mouse: boolean } | null = null;
     let lastMove = 0;
     let pending: number | null = null;
 
@@ -159,14 +205,35 @@ function Picker() {
     };
 
     const onDown = (e: PointerEvent) => {
-      down = { x: e.clientX, y: e.clientY, t: performance.now() };
+      down = { x: e.clientX, y: e.clientY, t: performance.now(), button: e.button, mouse: e.pointerType === "mouse" };
+    };
+    const openMenu = (clientX: number, clientY: number) => {
+      const { openMenu } = useContribStore.getState();
+      const hit = pickAt(clientX, clientY);
+      if (hit) {
+        const info = tileManager.describe(hit.tile.key, hit.index);
+        if (!info) return;
+        const { lat, lng } = fromScene(tileManager.origin, info.center.x, info.center.z);
+        openMenu({ kind: "building", key: info.key, index: info.index, id: info.id, tags: info.tags, lat, lng }, clientX, clientY);
+        return;
+      }
+      const p = tileManager.pickGround(raycaster.ray);
+      if (!p) return;
+      const { lat, lng } = fromScene(tileManager.origin, p.x, p.z);
+      const distance = camera.position.distanceTo(controls?.target ?? p);
+      openMenu({ kind: "ground", lat, lng, x: p.x, z: p.z, distance }, clientX, clientY);
     };
     const onUp = (e: PointerEvent) => {
       if (!down) return;
       const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
-      const quick = performance.now() - down.t < 600;
+      const elapsed = performance.now() - down.t;
+      const { button, mouse } = down;
       down = null;
-      if (moved > 6 || !quick) return; // that was a drag (pan / rotate)
+      if (button === 2) {
+        if (mouse && moved <= 4 && elapsed < 500) openMenu(e.clientX, e.clientY);
+        return;
+      }
+      if (button !== 0 || moved > 6 || elapsed >= 600) return; // that was a drag (pan / rotate)
       const hit = pickAt(e.clientX, e.clientY);
       if (!hit) return;
       const cur = useViewStore.getState().selected;
@@ -200,18 +267,21 @@ function Picker() {
       el.style.cursor = "";
     };
 
+    const noNativeMenu = (e: MouseEvent) => e.preventDefault();
+    el.addEventListener("contextmenu", noNativeMenu);
     el.addEventListener("pointerdown", onDown);
     el.addEventListener("pointerup", onUp);
     el.addEventListener("pointermove", onMove);
     el.addEventListener("pointerleave", onLeave);
     return () => {
+      el.removeEventListener("contextmenu", noNativeMenu);
       el.removeEventListener("pointerdown", onDown);
       el.removeEventListener("pointerup", onUp);
       el.removeEventListener("pointermove", onMove);
       el.removeEventListener("pointerleave", onLeave);
       if (pending !== null) clearTimeout(pending);
     };
-  }, [gl, camera, invalidate, select]);
+  }, [gl, camera, controls, invalidate, select]);
 
   const selected = useViewStore((s) => s.selected);
   useEffect(() => {

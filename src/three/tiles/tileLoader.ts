@@ -3,9 +3,18 @@ import { Origin, TILE_Z } from "./geo";
 import { TileData, TileFeature, buildBuildingTile, buildRoadTile, transferables } from "./buildTile";
 import { GroundTileData, computeBuildingBases, computeRoadHeights, getGrid, loadGroundTile } from "./terrain";
 import { WaterResult, loadWaterSdf } from "./water";
+import { OverlayTile, applyOverlay, fetchOverlayTile } from "@/api/overlay";
 
-/** `terrain`: also place the tile on the ground (same job, no second round trip) */
-export type TileRequest = { layer: "building" | "road"; x: number; y: number; origin: Origin; terrain?: boolean };
+export type TileRequest = {
+  layer: "building" | "road";
+  x: number;
+  y: number;
+  origin: Origin;
+  /** also place the tile on the ground (same job, no second round trip) */
+  terrain?: boolean;
+  /** buildings: the tile has approved edits at this revision (from the overlay index) */
+  overlayRev?: number;
+};
 
 export type WorkerJob =
   | { kind: "tile"; req: TileRequest }
@@ -25,11 +34,19 @@ export async function loadTile(req: TileRequest): Promise<TileData> {
   const t0 = performance.now();
   // with terrain, start downloading the elevation (z13 parent + neighbours) alongside the OSM tile
   if (req.terrain) getGrid(req.x >> 1, req.y >> 1).catch(() => {});
+  const overlay: Promise<OverlayTile | null> =
+    req.layer === "building" && req.overlayRev !== undefined
+      ? fetchOverlayTile(req.x, req.y, req.overlayRev).catch((err) => {
+          console.warn("overlay tile:", err);
+          return null; // OSM data as is rather than no tile
+        })
+      : Promise.resolve(null);
   const archives = await getArchives();
   const archive = req.layer === "building" ? archives.buildings : archives.roads;
   const tile = await archive.getZxy(TILE_Z, req.x, req.y);
+  const edits = await overlay;
   const t1 = performance.now();
-  const features: TileFeature[] = tile ? JSON.parse(decoder.decode(tile.data)).f : [];
+  const features = applyOverlay<TileFeature>(tile ? JSON.parse(decoder.decode(tile.data)).f : [], edits);
   const data =
     req.layer === "building"
       ? buildBuildingTile(features, req.x, req.y, req.origin)

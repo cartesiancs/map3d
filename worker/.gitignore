@@ -1,0 +1,4 @@
+node_modules
+.wrangler
+# local secrets (see .dev.vars.example)
+.dev.vars

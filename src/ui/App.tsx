@@ -6,9 +6,14 @@ import { TopBar } from "@/components/ui/TopBar";
 import { SettingsPanel } from "@/components/ui/SettingsPanel";
 import { BuildingPanel } from "@/components/ui/BuildingPanel";
 import { DownloadMap } from "@/components/ui/DownloadMap";
+import { MapContextMenu } from "@/components/ui/MapContextMenu";
+import { HeightEditor } from "@/components/ui/HeightEditor";
+import { ContributionsPanel } from "@/components/ui/ContributionsPanel";
 import { UI, iconSize, spin } from "@/components/ui/styles";
 import { useAreaStore } from "@/state/areaStore";
 import { useViewStore } from "@/state/viewStore";
+import { useAuthStore } from "@/state/authStore";
+import { useContribStore } from "@/state/contribStore";
 import { BBox } from "@/api/osmSource";
 import { exportAreaGLB } from "@/three/exportArea";
 import { toScene } from "@/three/tiles/geo";
@@ -66,7 +71,8 @@ function Attribution() {
   const link = css({ color: "inherit", pointerEvents: "auto" });
   return (
     <>
-      © <a css={link} href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> contributors
+      © <a css={link} href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> contributors · map3d
+      contributors (<a css={link} href="https://opendatacommons.org/licenses/odbl/1-0/" target="_blank" rel="noreferrer">ODbL</a>)
       {terrain && (
         <>
           {" · Elevation: "}
@@ -87,9 +93,36 @@ function App() {
   const [downloadError, setDownloadError] = useState(false);
   const select = useViewStore((s) => s.select);
 
+  // who is signed in (GitHub, via the map3d API); also reads ?auth=… after coming back from GitHub
+  useEffect(() => {
+    useAuthStore.getState().init();
+  }, []);
+
+  // my proposals (badges, "Edit my proposal") and, for admins, the size of the review queue
+  const authStatus = useAuthStore((s) => s.status);
+  const isAdmin = useAuthStore((s) => s.user?.isAdmin ?? false);
+  useEffect(() => {
+    const contrib = useContribStore.getState();
+    if (authStatus !== "signedIn") {
+      contrib.clear();
+      return;
+    }
+    contrib.loadMine();
+    if (!isAdmin) return;
+    contrib.loadQueue();
+    const timer = window.setInterval(() => useContribStore.getState().loadQueue(), 120_000);
+    return () => clearInterval(timer);
+  }, [authStatus, isAdmin]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
+      const contrib = useContribStore.getState();
+      if (contrib.heightEdit) {
+        contrib.closeHeightEdit(); // one step back: the building stays selected
+        return;
+      }
+      contrib.setPanel(null);
       setSettingsOpen(false);
       if (!downloading) setDownloadOpen(false);
       select(null);
@@ -137,6 +170,9 @@ function App() {
       />
       <SettingsPanel open={settingsOpen} />
       <BuildingPanel />
+      <HeightEditor />
+      <ContributionsPanel />
+      <MapContextMenu />
       <DownloadMap
         open={downloadOpen}
         busy={downloading}

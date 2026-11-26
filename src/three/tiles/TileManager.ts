@@ -33,6 +33,8 @@ export type Tile = {
   tags?: Record<string, string>[];
   lastWanted: number;
   failedAt?: number;
+  /** buildings: overlay revision the tile was built with (undefined: no edits) */
+  overlayRev?: number;
   /** ground under each building: [lowest, highest] corner (terrain on); null until computed */
   bases?: Float32Array | null;
   /** per-vertex ground offset (the aBase attribute array) */
@@ -68,6 +70,8 @@ export type Hit = { tile: Tile; index: number; distance: number };
 export type ManagerStats = { tiles: number; buildings: number; loading: number; failed: number; ground: number };
 
 const RETRY_AFTER_MS = 15000;
+/** buildings wait this long for the first overlay index, then load without it (and reload once it arrives) */
+const OVERLAY_WAIT_MS = 1500;
 const _v0 = new THREE.Vector3();
 const _v1 = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
@@ -165,6 +169,8 @@ export class TileManager {
   private mapUniforms = { uLand: { value: new THREE.Color(LAND_COLOR) }, uSea: { value: new THREE.Color(SEA_COLOR) } };
   private hover: { mesh: THREE.Mesh; tile: Tile; index: number } | null = null;
   private selected: { mesh: THREE.Mesh; key: string; index: number } | null = null;
+  /** building shown at a proposed height: its original roof heights, to put back */
+  private preview: { tile: Tile; index: number; roof: Float32Array; height: number } | null = null;
   private frustum = new THREE.Frustum();
   private projScreen = new THREE.Matrix4();
   private box = new THREE.Box3();
@@ -173,6 +179,11 @@ export class TileManager {
   private lastStats = "";
   private lastCenter = new THREE.Vector3(Infinity, 0, 0);
   radius = 0;
+  /** approved edits: z14 tiles that have an overlay, with its revision (null until the first index) */
+  private overlayTiles: Record<string, number> | null = null;
+  private overlayWaitUntil = performance.now() + OVERLAY_WAIT_MS;
+  /** building tiles dropped for a newer overlay (their indices are no longer valid) */
+  onReplaced: (keys: string[]) => void = () => {};
 
   constructor(origin: Origin, config: LevelConfig) {
     this.origin = origin;
@@ -310,7 +321,8 @@ export class TileManager {
 
     this.evict();
     this.publish(target, now);
-    return this.uploadQueue.length > 0;
+    // keep frames coming while buildings wait for the overlay index, so they start when the wait ends
+    return this.uploadQueue.length > 0 || (!this.overlayTiles && now < this.overlayWaitUntil);
   }
 
   private selectTiles(target: THREE.Vector3, R: number, now: number) {
@@ -419,8 +431,35 @@ export class TileManager {
     }
   }
 
+  /**
+   * New overlay index: building tiles built with another revision of their edits are dropped and load again
+   * (nearest first, like any missing tile).
+   */
+  setOverlay(tiles: Record<string, number>) {
+    this.overlayTiles = tiles;
+    const replaced: string[] = [];
+    const map = this.tiles.building;
+    for (const t of [...map.values()]) {
+      if (t.overlayRev === tiles[t.key]) continue;
+      if (t.object) {
+        this.group.remove(t.object);
+        t.object.geometry.dispose();
+      }
+      if (this.hover?.tile === t) this.setHover(null);
+      if (this.selected?.key === t.key) this.setSelected(null);
+      map.delete(t.key); // a load still in flight is dropped when it returns
+      replaced.push(t.key);
+    }
+    if (replaced.length) {
+      this.namedDirty = true;
+      this.onReplaced(replaced);
+    }
+    this.onChange();
+  }
+
   private requestTiles(now: number) {
     const layers: Layer[] = this.showRoads ? ["building", "road"] : ["building"];
+    if (!this.overlayTiles && now < this.overlayWaitUntil) layers.shift(); // edits first, so a tile is built once
     const order = [...this.wanted].sort((a, b) => a[1] - b[1]).map(([key]) => key);
     for (const key of [...order, ...this.prefetch]) {
       for (const layer of layers) {
@@ -434,11 +473,12 @@ export class TileManager {
 
   private load(layer: Layer, key: string, now: number) {
     const [x, y] = key.split("/").map(Number);
-    const tile: Tile = { key, layer, x, y, state: "loading", lastWanted: now };
+    const overlayRev = layer === "building" ? this.overlayTiles?.[key] : undefined;
+    const tile: Tile = { key, layer, x, y, state: "loading", lastWanted: now, overlayRev };
     this.tiles[layer].set(key, tile);
     this.inFlight++;
     tileClient
-      .request({ layer, x, y, origin: this.origin, terrain: this.terrain })
+      .request({ layer, x, y, origin: this.origin, terrain: this.terrain, overlayRev })
       .then((data) => {
         if (this.tiles[layer].get(key) !== tile) return; // evicted or rebased meanwhile
         tile.data = data;
@@ -871,6 +911,89 @@ export class TileManager {
       center: new THREE.Vector3((b[5 * index] + b[5 * index + 2]) / 2, (low + high + b[5 * index + 4]) / 2, (b[5 * index + 1] + b[5 * index + 3]) / 2),
       height: b[5 * index + 4],
     };
+  }
+
+  /**
+   * Show one building at another height until cleared (Set height…, review queue): rewrites the roof ring of
+   * that building in its tile, and puts it back on clear. `height` uses the building height units.
+   */
+  previewHeight(ref: { key: string; index: number } | null, height: number | null) {
+    const p = this.preview;
+    if (p && this.tiles.building.get(p.tile.key) === p.tile) this.setRoof(p.tile, p.index, p.roof, p.height);
+    this.preview = null;
+    if (ref && height != null) {
+      const tile = this.tiles.building.get(ref.key);
+      if (tile?.state === "ready" && tile.object) {
+        const d = tile.data as BuildingTileData;
+        const [v0, vc] = d.ranges.subarray(4 * ref.index, 4 * ref.index + 2);
+        const n = vc / 2;
+        const roof = new Float32Array(n);
+        for (let k = 0; k < n; k++) roof[k] = d.positions[(v0 + n + k) * 3 + 1];
+        this.preview = { tile, index: ref.index, roof, height: d.bounds[5 * ref.index + 4] };
+        this.setRoof(tile, ref.index, roof.map(() => height), height);
+      }
+    }
+    this.onChange();
+  }
+
+  private setRoof(tile: Tile, index: number, roof: Float32Array, height: number) {
+    const d = tile.data as BuildingTileData;
+    const [v0, vc] = d.ranges.subarray(4 * index, 4 * index + 2);
+    const n = vc / 2;
+    for (let k = 0; k < n; k++) d.positions[(v0 + n + k) * 3 + 1] = roof[k];
+    d.bounds[5 * index + 4] = height;
+    const mesh = tile.object as THREE.Mesh;
+    const attr = mesh.geometry.getAttribute("position") as THREE.BufferAttribute;
+    attr.clearUpdateRanges();
+    attr.addUpdateRange((v0 + n) * 3, n * 3);
+    attr.needsUpdate = true;
+    tile.box = this.buildingBox(d, this.terrain ? (tile.bases ?? null) : null);
+    mesh.geometry.boundingBox = tile.box.clone();
+    mesh.geometry.boundingSphere = tile.box.getBoundingSphere(new THREE.Sphere());
+    // the highlight meshes are copies of the old shape
+    if (this.hover?.tile === tile && this.hover.index === index) this.setHover(null);
+    if (this.selected?.key === tile.key && this.selected.index === index) {
+      const sel = { key: this.selected.key, index };
+      this.setSelected(null);
+      this.setSelected(sel);
+    }
+  }
+
+  /** Where a ray meets the ground (terrain relief when on, else y = 0); null above the horizon. */
+  pickGround(ray: THREE.Ray): THREE.Vector3 | null {
+    if (ray.direction.y > -1e-6) return null;
+    const p = new THREE.Vector3();
+    let h = 0;
+    for (let i = 0; i < 8; i++) {
+      const t = (h - ray.origin.y) / ray.direction.y;
+      if (t < 0) return null;
+      ray.at(t, p);
+      const g = this.groundHeightAt(p.x, p.z);
+      if (g === null || Math.abs(g - h) < 0.05) break;
+      h = g;
+    }
+    p.y = h;
+    return p;
+  }
+
+  /** lat / lng box around a loaded building (with a small margin) */
+  buildingLngLatBox(key: string, index: number) {
+    const tile = this.tiles.building.get(key);
+    if (!tile || tile.state !== "ready") return null;
+    const b = (tile.data as BuildingTileData).bounds;
+    const sw = fromScene(this.origin, b[5 * index] - 2, b[5 * index + 3] + 2);
+    const ne = fromScene(this.origin, b[5 * index + 2] + 2, b[5 * index + 1] - 2);
+    return { south: sw.lat, west: sw.lng, north: ne.lat, east: ne.lng };
+  }
+
+  /** a loaded building by id (OSM way id, or negative for buildings added on map3d) */
+  findBuilding(id: number): { key: string; index: number } | null {
+    for (const t of this.tiles.building.values()) {
+      if (t.state !== "ready") continue;
+      const index = (t.data as BuildingTileData).ids.indexOf(id);
+      if (index >= 0) return { key: t.key, index };
+    }
+    return null;
   }
 
   retryFailed() {

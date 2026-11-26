@@ -8,6 +8,7 @@
 // segment crossing it, which matches what Overpass returns for `way[...](bbox)` / `relation[...](bbox)`.
 
 import { PMTiles } from "pmtiles";
+import { OverlayTile, fetchOverlayTile, overlayIndexCached } from "./overlay";
 
 const DATA_URL = (import.meta.env.VITE_OSM_DATA_URL ?? "https://cdn.map3d.fleet.im").replace(/\/+$/, "");
 const ZOOM = 14;
@@ -109,7 +110,25 @@ function partsIntersectBBox(parts: Ring[][], b: BBox) {
   return false;
 }
 
-async function queryArchive(archive: PMTiles, bbox: BBox): Promise<OsmFeature[]> {
+/** Edits of the tiles around the bbox (one ring wider: buildings reach into neighbouring tiles). */
+async function overlayFor(bbox: BBox): Promise<OverlayTile> {
+  const index = await overlayIndexCached();
+  const n = 2 ** ZOOM;
+  const x0 = Math.floor(lonToTileX(bbox.west)) - 1, x1 = Math.floor(lonToTileX(bbox.east)) + 1;
+  const y0 = Math.floor(latToTileY(bbox.north)) - 1, y1 = Math.floor(latToTileY(bbox.south)) + 1;
+  const jobs: Promise<OverlayTile>[] = [];
+  for (let x = Math.max(0, x0); x <= Math.min(n - 1, x1); x++) {
+    for (let y = Math.max(0, y0); y <= Math.min(n - 1, y1); y++) {
+      const rev = index.tiles[`${x}/${y}`];
+      if (rev !== undefined) jobs.push(fetchOverlayTile(x, y, rev));
+    }
+  }
+  const tiles = await Promise.all(jobs);
+  return { hide: tiles.flatMap((t) => t.hide), add: tiles.flatMap((t) => t.add) };
+}
+
+async function queryArchive(archive: PMTiles, bbox: BBox, overlay: OverlayTile | null = null): Promise<OsmFeature[]> {
+  const hidden = new Set(overlay?.hide ?? []);
   const n = 2 ** ZOOM;
   const clamp = (v: number) => Math.max(0, Math.min(n - 1, v));
   const xMin = clamp(Math.floor(lonToTileX(bbox.west)));
@@ -130,6 +149,7 @@ async function queryArchive(archive: PMTiles, bbox: BBox): Promise<OsmFeature[]>
       if (!tile) continue;
       const { f } = JSON.parse(decoder.decode(tile.data)) as { f: TileFeature[] };
       for (const feat of f) {
+        if (feat.t === "w" && hidden.has(feat.id)) continue; // replaced by an approved edit
         const key = feat.t + feat.id;
         if (seen.has(key)) continue; // unclipped: the same copy is in every tile it touches
         const parts = feat.g.map((part) => part.map(decodeRing));
@@ -141,6 +161,13 @@ async function queryArchive(archive: PMTiles, bbox: BBox): Promise<OsmFeature[]>
     }
   }
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, coords.length) }, worker));
+  // approved edits and new buildings, same rule as the OSM features
+  for (const feat of overlay?.add ?? []) {
+    const key = feat.t + feat.id;
+    if (seen.has(key)) continue;
+    const parts = feat.g.map((part) => part.map(decodeRing));
+    seen.set(key, partsIntersectBBox(parts, bbox) ? { type: feat.t === "w" ? "way" : "relation", id: feat.id, tags: feat.tags, parts } : null);
+  }
 
   // Overpass order: ways before relations, each by ascending id
   return [...seen.values()]
@@ -148,9 +175,10 @@ async function queryArchive(archive: PMTiles, bbox: BBox): Promise<OsmFeature[]>
     .sort((a, b) => (a.type === b.type ? a.id - b.id : a.type === "way" ? -1 : 1));
 }
 
-/** Same result as Overpass `(way["building"](bbox); relation["building"](bbox););` */
+/** Same result as Overpass `(way["building"](bbox); relation["building"](bbox););`, with approved edits applied */
 export async function fetchBuildings(bbox: BBox) {
-  return queryArchive((await getArchives()).buildings, bbox);
+  const [archives, overlay] = await Promise.all([getArchives(), overlayFor(bbox)]);
+  return queryArchive(archives.buildings, bbox, overlay);
 }
 
 /** Same result as Overpass `way["highway"](bbox);` */

@@ -1,6 +1,12 @@
 import { css } from "@emotion/react";
 import { useViewStore } from "@/state/viewStore";
-import { UI, mobile, panel } from "./styles";
+import { Ruler } from "lucide-react";
+import { UI, iconSize, mobile, panel, pillButton } from "./styles";
+import { pendingFor, useContribStore } from "@/state/contribStore";
+import { useAuthStore } from "@/state/authStore";
+import { describeProposal, refOf } from "@/api/contributions";
+import { tileManager } from "@/three/Space";
+import { fromScene } from "@/three/tiles/geo";
 import { englishName, isEnglishText, isForeignNameKey } from "@/utils/english";
 
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
@@ -16,6 +22,13 @@ const FACTS: [key: string, label: string, format?: (v: string) => string][] = [
   ["operator", "Operator"],
 ];
 const SHOWN = new Set(["name", "description", "source", ...FACTS.map(([k]) => k)]);
+
+/** Where the building comes from: OSM, an approved edit of it, or added on map3d (negative id) */
+function source(id: number | undefined, tags: Record<string, string>) {
+  if (id === undefined) return "";
+  if (id < 0) return "Added on map3d";
+  return tags["map3d:edited"] ? `OSM way ${id} · edited on map3d` : `OSM way ${id}`;
+}
 
 /** English only: address parts in another script are left out */
 function address(tags: Record<string, string>) {
@@ -44,11 +57,17 @@ function Row({ label, value }: { label: string; value: string }) {
 export function BuildingPanel() {
   const selected = useViewStore((s) => s.selected);
   const select = useViewStore((s) => s.select);
+  // Set height… takes the same place while open
+  const editing = useContribStore((s) => s.heightEdit !== null);
+  const mine = useContribStore((s) => s.mine);
+  const signedIn = useAuthStore((s) => s.status === "signedIn");
+  const open = !!selected && !editing;
+  const pending = selected ? pendingFor(mine, refOf(selected.id)) : undefined;
   const tags = selected?.tags ?? {};
   const addr = address(tags);
   // English only: other-language names and values in other scripts are never shown
   const others = Object.entries(tags).filter(
-    ([k, v]) => !SHOWN.has(k) && !k.startsWith("addr:") && !isForeignNameKey(k) && !isOtherLanguageKey(k) && isEnglishText(v),
+    ([k, v]) => !SHOWN.has(k) && !k.startsWith("addr:") && !k.startsWith("map3d:") && !isForeignNameKey(k) && !isOtherLanguageKey(k) && isEnglishText(v),
   );
   const name = englishName(tags);
   const title = name ?? (addr || "Building");
@@ -57,7 +76,7 @@ export function BuildingPanel() {
   return (
     <aside
       aria-label="Building information"
-      aria-hidden={!selected}
+      aria-hidden={!open}
       css={[
         panel,
         css({
@@ -73,9 +92,9 @@ export function BuildingPanel() {
           display: "flex",
           flexDirection: "column",
           transition: "opacity .2s, transform .2s",
-          opacity: selected ? 1 : 0,
-          transform: selected ? "none" : "translateX(24px)",
-          pointerEvents: selected ? "auto" : "none",
+          opacity: open ? 1 : 0,
+          transform: open ? "none" : "translateX(24px)",
+          pointerEvents: open ? "auto" : "none",
           [mobile]: {
             top: "auto",
             left: 12,
@@ -83,7 +102,7 @@ export function BuildingPanel() {
             bottom: 12,
             width: "auto",
             maxHeight: "55vh",
-            transform: selected ? "none" : "translateY(24px)",
+            transform: open ? "none" : "translateY(24px)",
           },
         }),
       ]}
@@ -132,7 +151,23 @@ export function BuildingPanel() {
             ))}
           </details>
         )}
-        <p css={css({ margin: "24px 0 0", fontSize: 12, color: UI.placeholder })}>OSM way {selected?.id}</p>
+        {pending && (
+          <p css={css({ margin: "20px 0 0", fontSize: 13, color: "#92400e" })}>Your proposal ({describeProposal(pending)}) is waiting for review.</p>
+        )}
+        {signedIn && selected && (
+          <button
+            onClick={() => {
+              const info = tileManager.describe(selected.key, selected.index);
+              if (!info) return;
+              const ll = fromScene(tileManager.origin, info.center.x, info.center.z);
+              useContribStore.getState().startHeightEdit({ ...selected, lat: ll.lat, lng: ll.lng, height: info.height });
+            }}
+            css={[pillButton, css({ marginTop: 18, padding: "0 14px", fontSize: 14, fontWeight: 600, color: UI.text, backgroundColor: "#e0e0e5", gap: 6, [mobile]: { display: "none" } })]}
+          >
+            <Ruler css={iconSize(15)} /> {pending ? "Edit my proposal" : "Set height…"}
+          </button>
+        )}
+        <p css={css({ margin: "24px 0 0", fontSize: 12, color: UI.placeholder })}>{source(selected?.id, tags)}</p>
       </div>
     </aside>
   );
