@@ -7,9 +7,10 @@
 // A query reads the tiles covering the bbox and keeps the features that have a vertex inside the bbox or a
 // segment crossing it, which matches what Overpass returns for `way[...](bbox)` / `relation[...](bbox)`.
 
-import { EtagMismatch, FetchSource, PMTiles, RangeResponse, Source } from "pmtiles";
+import { EtagMismatch, FetchSource, PMTiles, RangeResponse, SharedPromiseCache, Source } from "pmtiles";
 import { fetchRetry, isTransient, withRetry } from "./retry";
 import { OverlayTile, fetchOverlayTile, overlayIndexCached } from "./overlay";
+import { ArchiveRpc, CachingSource, IN_WORKER, RemoteCache, RpcReply, callMain } from "./pmtilesShared";
 
 const DATA_URL = (import.meta.env.VITE_OSM_DATA_URL ?? "https://cdn.map3d.fleet.im").replace(/\/+$/, "");
 const ZOOM = 14;
@@ -47,27 +48,72 @@ class RetrySource implements Source {
     );
   }
 }
-const archive = (path: string) => new PMTiles(new RetrySource(`${DATA_URL}/${path}`));
 
-let archives: Promise<{ buildings: PMTiles; roads: PMTiles; water: PMTiles | null; manifest: Manifest }> | null = null;
+type Archives = { buildings: PMTiles; roads: PMTiles; water: PMTiles | null; manifest: Manifest };
+let archives: Promise<Archives> | null = null;
+
+// Main thread: the one place that reads manifest.json, headers and directories (workers ask it, see
+// pmtilesShared.ts). Tile bytes are read where they are decoded, through a CachingSource.
+const mainCache = IN_WORKER ? null : new SharedPromiseCache(512);
+const mainSources = new Map<string, CachingSource>();
+const remoteCache = IN_WORKER ? new RemoteCache() : null;
+
+function loadManifest(): Promise<Manifest> {
+  if (IN_WORKER) return callMain<Manifest>({ op: "manifest" });
+  return fetchRetry(`${DATA_URL}/manifest.json`).then((res) => {
+    if (!res.ok) throw new Error(`OSM manifest: HTTP ${res.status}`);
+    return res.json() as Promise<Manifest>;
+  });
+}
+
+/** retries inside, cached tile bytes outside: a retried read is cached once it succeeds */
+function openArchive(file: string) {
+  const url = `${DATA_URL}/${file}`;
+  const source = new CachingSource(new RetrySource(url));
+  if (remoteCache) return new PMTiles(source, remoteCache);
+  mainSources.set(url, source);
+  return new PMTiles(source, mainCache!);
+}
 
 export function getArchives() {
-  archives ??= fetchRetry(`${DATA_URL}/manifest.json`)
-    .then((res) => {
-      if (!res.ok) throw new Error(`OSM manifest: HTTP ${res.status}`);
-      return res.json() as Promise<Manifest>;
-    })
+  archives ??= loadManifest()
     .then((manifest) => ({
       manifest,
-      buildings: archive(manifest.buildings),
-      roads: archive(manifest.roads),
-      water: manifest.water ? archive(manifest.water) : null,
+      buildings: openArchive(manifest.buildings),
+      roads: openArchive(manifest.roads),
+      water: manifest.water ? openArchive(manifest.water) : null,
     }))
     .catch((err) => {
       archives = null; // allow a retry on the next request
       throw err;
     });
   return archives;
+}
+
+/** Main thread: answer a worker's `callMain` from the page-wide manifest and PMTiles cache. */
+export async function serveArchiveRpc(id: number, req: ArchiveRpc): Promise<RpcReply> {
+  try {
+    const { manifest } = await getArchives();
+    if (req.op === "manifest") return { rpcReply: id, value: manifest };
+    const source = mainSources.get(req.url);
+    if (!source) throw new Error(`unknown archive ${req.url}`);
+    const cache = mainCache!;
+    switch (req.op) {
+      case "header":
+        return { rpcReply: id, value: await cache.getHeader(source) };
+      case "dir": {
+        const header = await cache.getHeader(source);
+        // the worker's offsets come from its copy of the header: they only apply to the same archive version
+        if ((req.etag ?? "") !== (header.etag ?? "")) throw new EtagMismatch("archive changed since the worker read its header");
+        return { rpcReply: id, value: await cache.getDirectory(source, req.offset, req.length, header) };
+      }
+      case "invalidate":
+        await cache.invalidate(source);
+        return { rpcReply: id };
+    }
+  } catch (err) {
+    return { rpcReply: id, error: err instanceof Error ? err.message : String(err), etagMismatch: err instanceof EtagMismatch };
+  }
 }
 
 const lonToTileX = (lon: number) => ((lon + 180) / 360) * 2 ** ZOOM;

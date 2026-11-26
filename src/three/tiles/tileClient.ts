@@ -1,5 +1,7 @@
 import { handle, JobResult, TileRequest, WorkerJob } from "./tileLoader";
 import type { TileData } from "./buildTile";
+import { serveArchiveRpc } from "@/api/osmSource";
+import type { RpcRequest } from "@/api/pmtilesShared";
 
 // ?worker=0 runs everything on the main thread (only for comparing performance)
 const params = typeof location !== "undefined" ? new URLSearchParams(location.search) : new URLSearchParams();
@@ -18,7 +20,13 @@ class TileClient {
     if (!this.workers.length) {
       for (let i = 0; i < POOL_SIZE; i++) {
         const w = new Worker(new URL("./tile.worker.ts", import.meta.url), { type: "module" });
-        w.onmessage = (e: MessageEvent<{ id: number; result?: JobResult; error?: string }>) => {
+        w.onmessage = (e: MessageEvent<{ id: number; result?: JobResult; error?: string } | RpcRequest>) => {
+          if ("rpc" in e.data) {
+            // the worker needs manifest / PMTiles header / directory: served from the page-wide cache
+            const { rpc, req } = e.data;
+            serveArchiveRpc(rpc, req).then((reply) => w.postMessage(reply));
+            return;
+          }
           const p = this.pending.get(e.data.id);
           if (!p) return;
           this.pending.delete(e.data.id);
