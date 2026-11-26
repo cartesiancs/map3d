@@ -4,6 +4,17 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>map3d</title>
+    <script>
+      // light / dark before the first paint (no flash): saved choice, else the system setting (see src/state/theme.ts)
+      (function () {
+        var choice = "system";
+        try {
+          choice = localStorage.getItem("map3d.theme") || "system";
+        } catch (e) {}
+        var dark = choice === "dark" || (choice !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+        document.documentElement.dataset.theme = dark ? "dark" : "light";
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -12,6 +12,7 @@ import { LIMITS } from "@/contrib/validate";
 import { tileManager } from "@/three/Space";
 import { englishName, isEnglishText } from "@/utils/english";
 import { UI, iconSize, mobile, panel, pillButton, primaryButton, spin } from "./styles";
+import { useLastValue } from "./usePanel";
 
 const COMMENT_MIN = 10;
 const COMMENT_MAX = 500;
@@ -24,11 +25,12 @@ export const input = css({
   width: "100%",
   boxSizing: "border-box",
   height: 36,
-  border: "1px solid #d4d4d8",
+  border: `1px solid ${UI.fieldBorder}`,
   borderRadius: 10,
-  backgroundColor: "#ffffff",
+  backgroundColor: UI.field,
   padding: "0 10px",
   fontSize: 15,
+  [mobile]: { fontSize: 16 }, // no iOS zoom on focus
   color: UI.text,
   fontFamily: "inherit",
   ":focus": { outline: `2px solid ${UI.accent}`, outlineOffset: -1, borderColor: "transparent" },
@@ -79,9 +81,11 @@ export function HeightEditor() {
   const [busy, setBusy] = useState(false);
   const [serverErrors, setServerErrors] = useState<string[]>([]);
 
-  const ref = edit ? refOf(edit.id) : "";
-  const pending = edit ? pendingFor(mine, ref) : undefined;
-  const startLevels = edit?.tags["building:levels"] ?? "";
+  // while the panel fades out it keeps showing the building it was editing
+  const shown = useLastValue(edit);
+  const ref = shown ? refOf(shown.id) : "";
+  const pending = shown ? pendingFor(mine, ref) : undefined;
+  const startLevels = shown?.tags["building:levels"] ?? "";
 
   // start from my pending proposal for this building, else from what is shown
   useEffect(() => {
@@ -143,15 +147,15 @@ export function HeightEditor() {
     }
   };
 
-  const max = Math.max(300, Math.ceil(((edit?.height ?? 0) * 2) / 50) * 50);
-  const name = edit ? englishName(edit.tags) : null;
+  const max = Math.max(300, Math.ceil(((shown?.height ?? 0) * 2) / 50) * 50);
+  const name = shown ? englishName(shown.tags) : null;
   const levelHint = lv !== null && levelsOk ? lv * LEVEL_M : null;
 
   return (
     <aside aria-label="Set height" aria-hidden={!edit} css={sidePanel(!!edit)} onKeyDown={(e) => e.key === "Escape" && close()}>
       <h2 css={css({ margin: 0, fontSize: 22, fontWeight: 600 })}>Set height</h2>
       <p css={css({ margin: "4px 0 0", fontSize: 14, color: UI.icon })}>
-        {name ?? "Building"} · now {edit ? round1(edit.height) : ""} m
+        {name ?? "Building"} · now {shown ? round1(shown.height) : ""} m
         {pending && " · your proposal is waiting for review"}
       </p>
 
@@ -217,7 +221,7 @@ export function HeightEditor() {
           onChange={(e) => setComment(e.target.value)}
         />
         {comment.trim() !== "" && !commentOk && (
-          <span css={css({ display: "block", marginTop: 4, fontSize: 12, color: "#b45309" })}>
+          <span css={css({ display: "block", marginTop: 4, fontSize: 12, color: UI.warn })}>
             At least {COMMENT_MIN} characters, English only.
           </span>
         )}
@@ -237,7 +241,7 @@ export function HeightEditor() {
       )}
 
       {[...problems, ...serverErrors].length > 0 && (
-        <ul css={css({ margin: "14px 0 0", padding: "0 0 0 18px", fontSize: 13, color: "#b42318" })}>
+        <ul css={css({ margin: "14px 0 0", padding: "0 0 0 18px", fontSize: 13, color: UI.danger })}>
           {[...problems, ...serverErrors].map((p) => (
             <li key={p}>{p}</li>
           ))}
@@ -245,7 +249,7 @@ export function HeightEditor() {
       )}
 
       <div css={css({ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 20 })}>
-        <button css={[pillButton, css({ padding: "0 16px", fontSize: 14, fontWeight: 600, color: UI.text, backgroundColor: "#e0e0e5" })]} onClick={close}>
+        <button css={[pillButton, css({ padding: "0 16px", fontSize: 14, fontWeight: 600, color: UI.text, backgroundColor: UI.control })]} onClick={close}>
           Cancel
         </button>
         <button css={[primaryButton, css({ padding: "0 18px" })]} disabled={!canSubmit} onClick={submit}>

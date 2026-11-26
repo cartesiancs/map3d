@@ -193,7 +193,7 @@ function App() {
           lineHeight: 1.4,
           textAlign: "right",
           color: UI.icon,
-          textShadow: "0 0 3px rgba(255,255,255,0.9)",
+          textShadow: `0 0 3px ${UI.halo}`,
           pointerEvents: "none",
         })}
       >

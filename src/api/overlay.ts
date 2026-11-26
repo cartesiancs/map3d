@@ -5,6 +5,7 @@
 // Used on the main thread and in the tile worker.
 
 import { API_URL } from "./auth";
+import { fetchRetry } from "./retry";
 
 const DATA_URL = (import.meta.env.VITE_OSM_DATA_URL ?? "https://cdn.map3d.fleet.im").replace(/\/+$/, "");
 export const OVERLAY_URL = (import.meta.env.VITE_OVERLAY_URL ?? (import.meta.env.DEV ? `${API_URL}/overlay` : `${DATA_URL}/overlay`)).replace(/\/+$/, "");
@@ -30,7 +31,7 @@ export async function fetchOverlayIndex(): Promise<OverlayIndex | null> {
 }
 
 export async function fetchOverlayTile(x: number, y: number, rev: number): Promise<OverlayTile> {
-  const res = await fetch(`${OVERLAY_URL}/14/${x}/${y}.json?v=${rev}`);
+  const res = await fetchRetry(`${OVERLAY_URL}/14/${x}/${y}.json?v=${rev}`);
   if (res.status === 404) return { hide: [], add: [] };
   if (!res.ok) throw new Error(`overlay ${x}/${y}: HTTP ${res.status}`);
   const j = (await res.json()) as OverlayTile;

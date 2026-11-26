@@ -105,6 +105,8 @@ function SearchBox() {
             transition: "width .15s",
             userSelect: "text",
             "::placeholder": { color: UI.placeholder },
+            // iOS Safari zooms the page into any focused field under 16px
+            [mobile]: { fontSize: 16, width: query ? "100%" : 60 },
           })}
         />
       </label>
@@ -355,7 +357,7 @@ function AccountButton() {
           role="menu"
           css={[panel, css({ position: "absolute", top: UI.barHeight + 8, right: 0, width: 220, borderRadius: 16, padding: 6, zIndex: 40 })]}
         >
-          <div css={css({ padding: "8px 10px 10px", borderBottom: "1px solid #dcdce1", marginBottom: 4 })}>
+          <div css={css({ padding: "8px 10px 10px", borderBottom: `1px solid ${UI.line}`, marginBottom: 4 })}>
             <div css={css({ fontSize: 14, fontWeight: 600 })}>@{user.login}</div>
             <div css={css({ fontSize: 12, color: UI.icon, marginTop: 2, display: "flex", alignItems: "center", gap: 4 })}>
               {user.isAdmin ? (

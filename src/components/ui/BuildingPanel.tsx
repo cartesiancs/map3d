@@ -7,6 +7,7 @@ import { useAuthStore } from "@/state/authStore";
 import { describeProposal, refOf } from "@/api/contributions";
 import { tileManager } from "@/three/Space";
 import { fromScene } from "@/three/tiles/geo";
+import { useLastValue, useSwipeDown } from "./usePanel";
 import { englishName, isEnglishText, isForeignNameKey } from "@/utils/english";
 
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
@@ -55,13 +56,17 @@ function Row({ label, value }: { label: string; value: string }) {
 }
 
 export function BuildingPanel() {
-  const selected = useViewStore((s) => s.selected);
+  const current = useViewStore((s) => s.selected);
+  // while the panel fades out it keeps showing the building it showed
+  const selected = useLastValue(current);
   const select = useViewStore((s) => s.select);
   // Set height… takes the same place while open
   const editing = useContribStore((s) => s.heightEdit !== null);
   const mine = useContribStore((s) => s.mine);
   const signedIn = useAuthStore((s) => s.status === "signedIn");
-  const open = !!selected && !editing;
+  const open = !!current && !editing;
+  const close = () => select(null);
+  const swipe = useSwipeDown<HTMLElement>(close);
   const pending = selected ? pendingFor(mine, refOf(selected.id)) : undefined;
   const tags = selected?.tags ?? {};
   const addr = address(tags);
@@ -75,6 +80,7 @@ export function BuildingPanel() {
 
   return (
     <aside
+      ref={swipe.ref}
       aria-label="Building information"
       aria-hidden={!open}
       css={[
@@ -107,15 +113,20 @@ export function BuildingPanel() {
         }),
       ]}
     >
+      {/* drag down to close (touch: the whole header; mouse: the handle), or tap the handle */}
+      <div {...swipe.handlers} css={css({ flexShrink: 0, display: "flex", flexDirection: "column", touchAction: "none" })}>
       <button
         aria-label="Close"
-        onClick={() => select(null)}
+        data-drag-handle
+        onClick={close}
         css={css({
           alignSelf: "center",
+          touchAction: "none",
+          cursor: "grab",
+          ":active": { cursor: "grabbing" },
           border: "none",
           background: "transparent",
           padding: "14px 20px 0",
-          cursor: "pointer",
           flexShrink: 0,
           "::before": {
             content: '""',
@@ -127,9 +138,12 @@ export function BuildingPanel() {
           },
         })}
       />
-      <div css={css({ overflowY: "auto", paddingTop: 36, userSelect: "text", [mobile]: { paddingTop: 20 } })}>
+      <div css={css({ paddingTop: 36, userSelect: "text", [mobile]: { paddingTop: 20 } })}>
         <h2 css={css({ margin: 0, fontSize: 24, fontWeight: 600, lineHeight: 1.25, wordBreak: "break-word" })}>{title}</h2>
         {name && addr && <p css={css({ margin: "6px 0 0", fontSize: 14, color: UI.icon })}>{addr}</p>}
+      </div>
+      </div>
+      <div css={css({ overflowY: "auto", userSelect: "text", minHeight: 0 })}>
         {description && <p css={css({ margin: "20px 0 0", fontSize: 16, lineHeight: 1.2 })}>{description}</p>}
 
         <div css={css({ marginTop: 22 })}>
@@ -152,7 +166,7 @@ export function BuildingPanel() {
           </details>
         )}
         {pending && (
-          <p css={css({ margin: "20px 0 0", fontSize: 13, color: "#92400e" })}>Your proposal ({describeProposal(pending)}) is waiting for review.</p>
+          <p css={css({ margin: "20px 0 0", fontSize: 13, color: UI.pendingFg })}>Your proposal ({describeProposal(pending)}) is waiting for review.</p>
         )}
         {signedIn && selected && (
           <button
@@ -162,7 +176,7 @@ export function BuildingPanel() {
               const ll = fromScene(tileManager.origin, info.center.x, info.center.z);
               useContribStore.getState().startHeightEdit({ ...selected, lat: ll.lat, lng: ll.lng, height: info.height });
             }}
-            css={[pillButton, css({ marginTop: 18, padding: "0 14px", fontSize: 14, fontWeight: 600, color: UI.text, backgroundColor: "#e0e0e5", gap: 6, [mobile]: { display: "none" } })]}
+            css={[pillButton, css({ marginTop: 18, padding: "0 14px", fontSize: 14, fontWeight: 600, color: UI.text, backgroundColor: UI.control, gap: 6, [mobile]: { display: "none" } })]}
           >
             <Ruler css={iconSize(15)} /> {pending ? "Edit my proposal" : "Set height…"}
           </button>

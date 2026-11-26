@@ -22,9 +22,10 @@ import { buildingHeight } from "@/three/tiles/geo";
 import { englishName } from "@/utils/english";
 import { UI, iconSize, mobile, panel, pillButton, primaryButton, spin } from "./styles";
 import { fieldLabel, input } from "./HeightEditor";
+import { useLastValue, usePresence } from "./usePanel";
 
 const STATUS: Record<Status, { label: string; bg: string; fg: string }> = {
-  pending: { label: "Pending", bg: "#fef3c7", fg: "#92400e" },
+  pending: { label: "Pending", bg: UI.pendingBg, fg: UI.pendingFg },
   conflict: { label: "Needs review", bg: "#fee2e2", fg: "#991b1b" },
   approved: { label: "Approved", bg: "#dcfce7", fg: "#166534" },
   rejected: { label: "Rejected", bg: "#f4f4f5", fg: "#52525b" },
@@ -35,7 +36,7 @@ const chip = (s: Status) =>
   css({ display: "inline-block", padding: "1px 8px", borderRadius: 9, fontSize: 11, fontWeight: 600, backgroundColor: STATUS[s].bg, color: STATUS[s].fg });
 const small = css({ fontSize: 12, color: UI.icon });
 const linkButton = css({ border: "none", background: "none", padding: 0, color: UI.accent, fontSize: 13, fontWeight: 600, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4 });
-const card = css({ backgroundColor: "#f7f7f9", borderRadius: 16, padding: "12px 14px", marginTop: 10 });
+const card = css({ backgroundColor: UI.card, borderRadius: 16, padding: "12px 14px", marginTop: 10 });
 const date = (iso: string) => new Date(iso).toLocaleDateString("en", { year: "numeric", month: "short", day: "numeric" });
 
 const buildingId = (ref: string | null) => (!ref ? null : ref.startsWith("new:") ? -Number(ref.slice(4)) : Number(ref.slice(4)));
@@ -204,13 +205,13 @@ function ReviewQueue() {
           <Change label="Name" before={name} after={item.proposal.name} />
           {item.proposal.footprint && <Change label="Shape" before="current" after={`${item.proposal.footprint.length} points`} />}
         </div>
-        <blockquote css={css({ margin: "10px 0 0", padding: "6px 10px", borderLeft: "3px solid #d4d4d8", fontSize: 13, lineHeight: 1.4 })}>{item.comment}</blockquote>
+        <blockquote css={css({ margin: "10px 0 0", padding: "6px 10px", borderLeft: `3px solid ${UI.fieldBorder}`, fontSize: 13, lineHeight: 1.4 })}>{item.comment}</blockquote>
         <div css={[small, css({ marginTop: 8 })]}>
           @{item.author.login}
           {since && ` · on GitHub since ${since}`} · {item.author.approved} of {item.author.reviewed} approved before
         </div>
         {(item.stale || item.status === "conflict") && (
-          <div css={css({ display: "flex", gap: 6, marginTop: 10, fontSize: 13, color: "#991b1b" })}>
+          <div css={css({ display: "flex", gap: 6, marginTop: 10, fontSize: 13, color: UI.danger })}>
             <AlertTriangle css={iconSize(15)} />
             The building changed after this was proposed. Approving applies only the fields above.
           </div>
@@ -223,12 +224,12 @@ function ReviewQueue() {
           <textarea css={[input, css({ height: 64, padding: "8px 10px", resize: "vertical" })]} value={note} onChange={(e) => setNote(e.target.value)} autoFocus />
         </label>
       )}
-      {error && <div css={css({ marginTop: 10, fontSize: 13, color: "#b42318" })}>{error}</div>}
+      {error && <div css={css({ marginTop: 10, fontSize: 13, color: UI.danger })}>{error}</div>}
 
       <div css={css({ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" })}>
         {rejecting ? (
           <>
-            <button css={[pillButton, css({ padding: "0 14px", fontSize: 14, fontWeight: 600, color: UI.text, backgroundColor: "#e0e0e5" })]} onClick={() => setRejecting(false)}>
+            <button css={[pillButton, css({ padding: "0 14px", fontSize: 14, fontWeight: 600, color: UI.text, backgroundColor: UI.control })]} onClick={() => setRejecting(false)}>
               Back
             </button>
             <button
@@ -245,11 +246,11 @@ function ReviewQueue() {
               {busy ? <Loader2 css={[iconSize(15), css({ animation: `${spin} 1s linear infinite` })]} /> : <Check css={iconSize(15)} />}
               {item.stale || item.status === "conflict" ? "Approve anyway" : "Approve"}
             </button>
-            <button css={[pillButton, css({ padding: "0 14px", fontSize: 14, fontWeight: 600, color: UI.text, backgroundColor: "#e0e0e5" })]} onClick={() => setRejecting(true)} title="Reject (R)">
+            <button css={[pillButton, css({ padding: "0 14px", fontSize: 14, fontWeight: 600, color: UI.text, backgroundColor: UI.control })]} onClick={() => setRejecting(true)} title="Reject (R)">
               <X css={iconSize(15)} /> Reject
             </button>
             <button
-              css={[pillButton, css({ padding: "0 14px", fontSize: 14, fontWeight: 600, color: UI.text, backgroundColor: "#e0e0e5" })]}
+              css={[pillButton, css({ padding: "0 14px", fontSize: 14, fontWeight: 600, color: UI.text, backgroundColor: UI.control })]}
               onClick={() => setIndex((i) => (i + 1) % queue.length)}
               disabled={queue.length < 2}
               title="Skip (S)"
@@ -268,6 +269,9 @@ export function ContributionsPanel() {
   const setPanel = useContribStore((s) => s.setPanel);
   const isAdmin = useAuthStore((s) => s.user?.isAdmin ?? false);
   const open = panelKind === "mine" || (panelKind === "review" && isAdmin);
+  // while it fades out the panel keeps its title and list (no flash of the other or empty state)
+  const kind = useLastValue(panelKind);
+  const mounted = usePresence(open);
 
   useEffect(() => {
     if (panelKind === "mine") useContribStore.getState().loadMine();
@@ -276,7 +280,7 @@ export function ContributionsPanel() {
 
   return (
     <aside
-      aria-label={panelKind === "review" ? "Review queue" : "My contributions"}
+      aria-label={kind === "review" ? "Review queue" : "My contributions"}
       aria-hidden={!open}
       css={[
         panel,
@@ -300,12 +304,12 @@ export function ContributionsPanel() {
       ]}
     >
       <div css={css({ display: "flex", justifyContent: "space-between", alignItems: "center" })}>
-        <h2 css={css({ margin: 0, fontSize: 20, fontWeight: 600 })}>{panelKind === "review" ? "Review queue" : "My contributions"}</h2>
+        <h2 css={css({ margin: 0, fontSize: 20, fontWeight: 600 })}>{kind === "review" ? "Review queue" : "My contributions"}</h2>
         <button aria-label="Close" css={[pillButton, css({ width: 30, minWidth: 30, height: 30, backgroundColor: "transparent" })]} onClick={() => setPanel(null)}>
           <X css={iconSize(16)} />
         </button>
       </div>
-      {open && (panelKind === "review" ? <ReviewQueue /> : <MyContributions />)}
+      {mounted && (kind === "review" && isAdmin ? <ReviewQueue /> : <MyContributions />)}
     </aside>
   );
 }

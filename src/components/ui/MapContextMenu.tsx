@@ -14,7 +14,7 @@ import { tileManager } from "@/three/Space";
 import { englishName } from "@/utils/english";
 import { UI, iconSize } from "./styles";
 
-const MENU = { bg: "#ffffff", border: "#e4e4e7", highlight: "#f4f4f5", muted: "#71717a" };
+const MENU = { bg: UI.menu, border: UI.menuBorder, highlight: UI.menuHover, muted: UI.muted };
 
 const content = css({
   minWidth: 224,
@@ -23,7 +23,7 @@ const content = css({
   color: UI.text,
   border: `1px solid ${MENU.border}`,
   borderRadius: 8,
-  boxShadow: "0 4px 6px -1px rgba(0,0,0,.1), 0 2px 4px -2px rgba(0,0,0,.1)",
+  boxShadow: `0 4px 6px -1px ${UI.shadowStrong}, 0 2px 4px -2px ${UI.shadowStrong}`,
   fontSize: 14,
   zIndex: 60,
   outline: "none",
@@ -57,8 +57,8 @@ const badge = css({
   borderRadius: 9,
   fontSize: 11,
   fontWeight: 600,
-  backgroundColor: "#fef3c7",
-  color: "#92400e",
+  backgroundColor: UI.pendingBg,
+  color: UI.pendingFg,
   verticalAlign: "1px",
 });
 const shortcut = css({ marginLeft: "auto", paddingLeft: 16, fontSize: 12, letterSpacing: "0.1em", color: MENU.muted });

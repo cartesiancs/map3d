@@ -1,5 +1,81 @@
 @import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css");
 
+/* Colors of the UI. `data-theme` on <html> is "light" or "dark": set before the first paint by index.html
+   (saved choice, else the system setting) and kept in sync by the app (Settings → Appearance). */
+:root {
+  color-scheme: light;
+  --m3-bg: #f6f7f8;
+  --m3-surface: #ececef;
+  --m3-surface-hover: #e2e2e6;
+  --m3-text: #3a3a3f;
+  --m3-icon: #5b5d63;
+  --m3-placeholder: #9d9da3;
+  --m3-handle: #b4b4ba;
+  --m3-accent: #3d83f7;
+  --m3-accent-hover: #2f74e6;
+  --m3-line: #dcdce1;
+  --m3-control: #e0e0e5;
+  --m3-control-off: #cfcfd4;
+  --m3-raised: #ffffff;
+  --m3-knob: #ffffff;
+  --m3-field: #ffffff;
+  --m3-field-border: #d4d4d8;
+  --m3-card: #f7f7f9;
+  --m3-menu: #ffffff;
+  --m3-menu-border: #e4e4e7;
+  --m3-menu-hover: #f4f4f5;
+  --m3-muted: #71717a;
+  --m3-shadow: rgba(0, 0, 0, 0.06);
+  --m3-shadow-strong: rgba(0, 0, 0, 0.12);
+  --m3-scrim: rgba(255, 255, 255, 0.55);
+  --m3-floating: rgba(255, 255, 255, 0.92);
+  --m3-halo: rgba(255, 255, 255, 0.9);
+  --m3-danger: #b42318;
+  --m3-warn: #b45309;
+  --m3-pending-bg: #fef3c7;
+  --m3-pending-fg: #92400e;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --m3-bg: #1a1b1e;
+  --m3-surface: #2a2b30;
+  --m3-surface-hover: #35363c;
+  --m3-text: #e8e8ec;
+  --m3-icon: #a4a6ae;
+  --m3-placeholder: #75777f;
+  --m3-handle: #5c5e66;
+  --m3-accent: #4b8ef8;
+  --m3-accent-hover: #6aa2fa;
+  --m3-line: #3a3b42;
+  --m3-control: #3a3b42;
+  --m3-control-off: #4c4d55;
+  --m3-raised: #4a4b53;
+  --m3-knob: #f4f4f5;
+  --m3-field: #1f2024;
+  --m3-field-border: #46474e;
+  --m3-card: #232428;
+  --m3-menu: #232428;
+  --m3-menu-border: #3a3b42;
+  --m3-menu-hover: #303137;
+  --m3-muted: #a1a1aa;
+  --m3-shadow: rgba(0, 0, 0, 0.35);
+  --m3-shadow-strong: rgba(0, 0, 0, 0.5);
+  --m3-scrim: rgba(18, 18, 21, 0.55);
+  --m3-floating: rgba(42, 43, 48, 0.94);
+  --m3-halo: rgba(0, 0, 0, 0.85);
+  --m3-danger: #f87171;
+  --m3-warn: #fbbf24;
+  --m3-pending-bg: #42300a;
+  --m3-pending-fg: #fcd34d;
+}
+
+html,
+body {
+  background-color: var(--m3-bg);
+  color: var(--m3-text);
+}
+
 html,
 body,
 #root {

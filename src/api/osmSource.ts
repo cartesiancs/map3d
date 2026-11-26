@@ -7,7 +7,8 @@
 // A query reads the tiles covering the bbox and keeps the features that have a vertex inside the bbox or a
 // segment crossing it, which matches what Overpass returns for `way[...](bbox)` / `relation[...](bbox)`.
 
-import { PMTiles } from "pmtiles";
+import { EtagMismatch, FetchSource, PMTiles, RangeResponse, Source } from "pmtiles";
+import { fetchRetry, isTransient, withRetry } from "./retry";
 import { OverlayTile, fetchOverlayTile, overlayIndexCached } from "./overlay";
 
 const DATA_URL = (import.meta.env.VITE_OSM_DATA_URL ?? "https://cdn.map3d.fleet.im").replace(/\/+$/, "");
@@ -30,19 +31,37 @@ export type OsmFeature = {
 type Manifest = { version: string; buildings: string; roads: string; osmTimestamp: string; water?: string };
 type TileFeature = { t: "w" | "r"; id: number; tags: Record<string, string>; g: number[][][] };
 
+/** PMTiles range reads with retries of transient failures (an ETag change is left to PMTiles, which reloads) */
+class RetrySource implements Source {
+  private inner: FetchSource;
+  constructor(url: string) {
+    this.inner = new FetchSource(url);
+  }
+  getKey() {
+    return this.inner.getKey();
+  }
+  getBytes(offset: number, length: number, signal?: AbortSignal, etag?: string): Promise<RangeResponse> {
+    return withRetry(
+      () => this.inner.getBytes(offset, length, signal, etag),
+      (err) => !(err instanceof EtagMismatch) && !signal?.aborted && isTransient(err),
+    );
+  }
+}
+const archive = (path: string) => new PMTiles(new RetrySource(`${DATA_URL}/${path}`));
+
 let archives: Promise<{ buildings: PMTiles; roads: PMTiles; water: PMTiles | null; manifest: Manifest }> | null = null;
 
 export function getArchives() {
-  archives ??= fetch(`${DATA_URL}/manifest.json`)
+  archives ??= fetchRetry(`${DATA_URL}/manifest.json`)
     .then((res) => {
       if (!res.ok) throw new Error(`OSM manifest: HTTP ${res.status}`);
       return res.json() as Promise<Manifest>;
     })
     .then((manifest) => ({
       manifest,
-      buildings: new PMTiles(`${DATA_URL}/${manifest.buildings}`),
-      roads: new PMTiles(`${DATA_URL}/${manifest.roads}`),
-      water: manifest.water ? new PMTiles(`${DATA_URL}/${manifest.water}`) : null,
+      buildings: archive(manifest.buildings),
+      roads: archive(manifest.roads),
+      water: manifest.water ? archive(manifest.water) : null,
     }))
     .catch((err) => {
       archives = null; // allow a retry on the next request

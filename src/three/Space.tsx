@@ -6,14 +6,15 @@ import { DEFAULT_AREA, NamedBuilding, ORIGIN, useAreaStore } from "@/state/areaS
 import { useViewStore } from "@/state/viewStore";
 import { useContribStore } from "@/state/contribStore";
 import { LEVELS } from "./tiles/levels";
-import { TileManager } from "./tiles/TileManager";
+import { SCENE_COLORS, TileManager } from "./tiles/TileManager";
+import { useThemeStore } from "@/state/theme";
 import { fromScene, toScene } from "./tiles/geo";
 import { fetchOverlayIndex } from "@/api/overlay";
 
-const BACKGROUND = "#f6f7f8";
 
 /** One manager for the whole session: tile meshes survive a Canvas remount (antialias change). */
 export const tileManager = new TileManager(ORIGIN, LEVELS[useViewStore.getState().level]);
+tileManager.setTheme(useThemeStore.getState().dark);
 tileManager.onStats = (stats) => useAreaStore.getState().setStats(stats);
 tileManager.onCenter = (center) => useAreaStore.getState().setCenter(center);
 tileManager.onNamed = (tiles) => {
@@ -99,7 +100,7 @@ function TileLayer() {
   useEffect(() => {
     tileManager.onChange = () => invalidate();
     tileManager.anisotropy = Math.min(8, gl.capabilities.getMaxAnisotropy());
-    scene.fog = new THREE.Fog(BACKGROUND, 1000, 2000);
+    scene.fog = new THREE.Fog(tileManager.colors.background, 1000, 2000);
     return () => {
       scene.fog = null;
     };
@@ -130,6 +131,13 @@ function TileLayer() {
     tileManager.setGround(terrain, groundMap);
     invalidate();
   }, [terrain, groundMap, invalidate]);
+
+  const dark = useThemeStore((s) => s.dark);
+  useEffect(() => {
+    tileManager.setTheme(dark);
+    if (scene.fog) scene.fog.color.set(tileManager.colors.background);
+    invalidate();
+  }, [dark, scene, invalidate]);
 
   useFrame((state) => {
     const controls = state.controls as unknown as Controls | null;
@@ -383,6 +391,10 @@ function DevHook() {
 
 export function Space() {
   const level = useViewStore((s) => s.level);
+  const dark = useThemeStore((s) => s.dark);
+  const background = SCENE_COLORS[dark ? "dark" : "light"].background;
+  // a night scene: dimmer lights, so dark materials stay dark under the bright city environment
+  const light = dark ? SCENE_COLORS.dark.light : 1;
   const cfg = LEVELS[level];
   const maxDpr = Math.min(cfg.dpr, window.devicePixelRatio || 1);
   const [dpr, setDpr] = useState(maxDpr);
@@ -403,11 +415,11 @@ export function Space() {
         onDecline={() => setDpr((d) => Math.max(1, +(d * 0.75).toFixed(2)))}
         onIncline={() => setDpr((d) => Math.min(maxDpr, +(d * 1.25).toFixed(2)))}
       />
-      <color attach="background" args={[BACKGROUND]} />
-      <ambientLight intensity={Math.PI / 2} />
-      <spotLight position={[10, 10, 10]} angle={0.15} penumbra={1} decay={0} intensity={Math.PI} />
-      <pointLight position={[-10, -10, -10]} decay={0} intensity={Math.PI} />
-      {!cfg.pbr && <directionalLight position={[300, 800, 400]} intensity={1.2} />}
+      <color attach="background" args={[background]} />
+      <ambientLight intensity={(Math.PI / 2) * light} />
+      <spotLight position={[10, 10, 10]} angle={0.15} penumbra={1} decay={0} intensity={Math.PI * light} />
+      <pointLight position={[-10, -10, -10]} decay={0} intensity={Math.PI * light} />
+      {!cfg.pbr && <directionalLight position={[300, 800, 400]} intensity={1.2 * light} />}
       <MapControls
         makeDefault
         enableDamping
@@ -421,7 +433,7 @@ export function Space() {
       <Picker />
       <CameraRig />
       <DevHook />
-      {cfg.pbr && <Environment preset="city" />}
+      {cfg.pbr && <Environment preset="city" environmentIntensity={light} />}
     </Canvas>
   );
 }
