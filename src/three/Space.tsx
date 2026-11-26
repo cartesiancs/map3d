@@ -74,13 +74,14 @@ export function goToPlace(lat: number, lng: number, distance: number) {
 
 const [nex, nez] = toScene(makeOrigin(DEFAULT_CENTER.lat, DEFAULT_CENTER.lng), DEFAULT_AREA.north, DEFAULT_AREA.east);
 const DEFAULT_EXTENT = Math.max(Math.abs(nex), Math.abs(nez)) * 2;
-/** first camera: as the last visit left it (target at the origin), else over the default area */
+/** first view: as the last visit left it (target at the origin, on the ground it was on), else over the default area */
+const DEFAULT_TARGET = new THREE.Vector3(0, START_VIEW?.height ?? 0, 0);
 const DEFAULT_CAMERA = START_VIEW
-  ? new THREE.Vector3(...START_VIEW.offset)
+  ? new THREE.Vector3(...START_VIEW.offset).add(DEFAULT_TARGET)
   : new THREE.Vector3(0, DEFAULT_EXTENT * 0.55, DEFAULT_EXTENT * 0.6);
 
 /** camera kept across Canvas remounts */
-const savedView = { position: DEFAULT_CAMERA.clone(), target: new THREE.Vector3() };
+const savedView = { position: DEFAULT_CAMERA.clone(), target: DEFAULT_TARGET.clone() };
 
 type Controls = THREE.EventDispatcher<{ start: object; change: object }> & {
   target: THREE.Vector3;
@@ -324,16 +325,18 @@ function CameraRig() {
     return () => controls.removeEventListener("start", cancel);
   }, [controls, camera]);
 
-  // remember the view for the next visit: each second while it settles, and when the page is hidden or left.
+  // remember the view for the next visit: each second, and when the page is hidden or left. During an eased
+  // move that is where it is heading (leaving right after a search still opens the searched place next time).
   // The target and the origin change together (rebase), so reading both here is always consistent.
   useEffect(() => {
     if (!controls) return;
     const save = () => {
-      const t = controls.target;
+      const t = goal.current?.target ?? controls.target;
+      const p = goal.current?.position ?? camera.position;
       const ll = fromScene(tileManager.origin, t.x, t.z);
-      saveLastView({ lat: ll.lat, lng: ll.lng, offset: [camera.position.x - t.x, camera.position.y - t.y, camera.position.z - t.z] });
+      saveLastView({ lat: ll.lat, lng: ll.lng, height: t.y, offset: [p.x - t.x, p.y - t.y, p.z - t.z] });
     };
-    const timer = window.setInterval(() => !cameraAnimating && save(), 1000);
+    const timer = window.setInterval(save, 1000);
     const onVisibility = () => document.visibilityState === "hidden" && save();
     window.addEventListener("pagehide", save);
     document.addEventListener("visibilitychange", onVisibility);
