@@ -112,20 +112,29 @@ function RectangleSelector({
   useEffect(() => {
     if (map) {
       isDrag ? map.dragging.enable() : map.dragging.disable();
+      // "+" cursor while drawing a box (inline style beats Leaflet's grab cursor)
+      map.getContainer().style.cursor = isDrag ? "" : "crosshair";
     }
   }, [isDrag, map]);
 
+  // non-interactive, so the box under the cursor does not switch it to a pointer while drawing
   return drawBounds ? (
-    <Rectangle bounds={drawBounds} pathOptions={{ color: "blue" }} />
+    <Rectangle bounds={drawBounds} pathOptions={{ color: "blue", interactive: false }} />
   ) : null;
 }
 
 export function MapComponent({
   onDone,
   onRemove,
+  center = [40.8, -73.95],
+  zoom = 13,
+  height = "70vh",
 }: {
   onDone: (e) => void;
   onRemove: () => void;
+  center?: [number, number];
+  zoom?: number;
+  height?: string;
 }) {
   const [isDrag, setIsDrag] = useState(true);
   const [bounds, setBounds] = useState<LatLngBounds | null>(null);
@@ -156,6 +165,7 @@ export function MapComponent({
     <div
       css={css({
         position: "relative",
+        height: "100%",
       })}
     >
       <div
@@ -221,10 +231,10 @@ export function MapComponent({
       </div>
 
       <MapContainer
-        center={[40.8, -73.95]}
-        zoom={13}
+        center={center}
+        zoom={zoom}
         style={{
-          height: "70vh",
+          height,
           width: "100%",
         }}
       >

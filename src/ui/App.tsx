@@ -1,303 +1,168 @@
-import { css, keyframes } from "@emotion/react";
-import { Space } from "../three/Space";
-import { FullscreenModal } from "../components/FullscreenModal";
-import { Title } from "@/components/text/Title";
-import { Description } from "@/components/text/Description";
-import { Column } from "@/components/flex/Column";
-import { MapComponent } from "@/components/map/SelectMap";
+import { css } from "@emotion/react";
 import { useEffect, useState } from "react";
-import {
-  Button,
-  NextButton,
-  PrevButton,
-} from "@/components/button/BottomButton";
-import { BuildingHeights, Building } from "@/components/map/Processing";
-import { ChevronLeft, ChevronRight, Download, Loader2 } from "lucide-react";
+import { Loader2 } from "lucide-react";
+import { Space, goToPlace, tileManager } from "../three/Space";
+import { TopBar } from "@/components/ui/TopBar";
+import { SettingsPanel } from "@/components/ui/SettingsPanel";
+import { BuildingPanel } from "@/components/ui/BuildingPanel";
+import { DownloadMap } from "@/components/ui/DownloadMap";
+import { UI, iconSize, spin } from "@/components/ui/styles";
 import { useAreaStore } from "@/state/areaStore";
-import { useActionStore } from "@/state/exportStore";
-import { Modal } from "@/components/modal/Modal";
-import { TopNav } from "@/components/nav/TopNav";
-import { getCookie } from "@/utils/cookie";
-import { Row } from "@/components/flex/Row";
-import instanceFleet from "@/api/axios";
+import { useViewStore } from "@/state/viewStore";
+import { BBox } from "@/api/osmSource";
+import { exportAreaGLB } from "@/three/exportArea";
+import { toScene } from "@/three/tiles/geo";
 
-const IconSize = css({
-  width: "14px",
-  height: "14px",
-});
+function StatusPill() {
+  const { tiles, loading, failed } = useAreaStore((s) => s.stats);
+  const firstLoad = tiles === 0;
+  if (!(firstLoad && loading > 0) && !(failed > 0 && loading === 0 && firstLoad)) return null;
+  return (
+    <div
+      role="status"
+      css={css({
+        position: "fixed",
+        left: "50%",
+        bottom: 32,
+        transform: "translateX(-50%)",
+        zIndex: 15,
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        height: UI.barHeight,
+        padding: "0 16px",
+        borderRadius: UI.barHeight / 2,
+        backgroundColor: UI.surface,
+        color: UI.text,
+        fontSize: 14,
+        fontWeight: 500,
+        whiteSpace: "nowrap",
+      })}
+    >
+      {loading > 0 ? (
+        <>
+          <Loader2 css={[iconSize(15), css({ animation: `${spin} 1s linear infinite` })]} />
+          {tileManager.originId === 0 ? "Loading Central Park…" : "Loading…"}
+        </>
+      ) : (
+        <>
+          Could not load map data.
+          <button
+            onClick={() => tileManager.retryFailed()}
+            css={css({ border: "none", background: "none", color: UI.accent, fontWeight: 600, cursor: "pointer", padding: 0, fontSize: 14 })}
+          >
+            Retry
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
 
-const spinAnimation = keyframes`
-from { transform: rotate(0deg); }
-to { transform: rotate(360deg); }
-`;
+/** Credits required by the data licenses, shown while each source is on screen. */
+function Attribution() {
+  // the land / sea map is OpenStreetMap data too (coastline), covered by the first credit
+  const terrain = useViewStore((s) => s.terrain);
+  const link = css({ color: "inherit", pointerEvents: "auto" });
+  return (
+    <>
+      © <a css={link} href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> contributors
+      {terrain && (
+        <>
+          {" · Elevation: "}
+          <a css={link} href="https://github.com/tilezen/joerd/blob/master/docs/attribution.md" target="_blank" rel="noreferrer">
+            Terrain Tiles
+          </a>{" "}
+          (USGS, NOAA, Copernicus …)
+        </>
+      )}
+    </>
+  );
+}
 
 function App() {
-  const [isNextButtonDisabled, setIsNextButtonDisabled] = useState(true);
-  const [areaData, setAreaData] = useState([]);
-  const [steps, setSteps] = useState(["front", "processing"]);
-  const [step, setStep] = useState(0);
-  const [isWarnModal, setIsWarnModal] = useState(false);
-  const [isExportModal, setIsExportModal] = useState(false);
-  const [isFleetLogin, setIsFleetLogin] = useState(false);
-  const [isFleetModal, setIsFleetModal] = useState(false);
-  const [spaceList, setSpaceList] = useState([]);
-  const [buildings, setBuildings] = useState<Building[]>([]);
-  const [isFetchingBuildings, setIsFetchingBuildings] = useState(false);
-  const [hasFetchedBuildings, setHasFetchedBuildings] = useState(false);
-
-  const setCenter = useAreaStore((state) => state.setCenter);
-  const appendAreas = useAreaStore((state) => state.appendAreas);
-  const setAction = useActionStore((state) => state.setAction);
-  const setFleet = useActionStore((state) => state.setFleet);
-
-  const checkIsBig = () => {
-    const a = areaData[0].lat - areaData[1].lat;
-    const b = areaData[0].lng - areaData[1].lng;
-
-    console.log(a + b);
-
-    if (a + b > 0.1) {
-      return true;
-    } else {
-      return false;
-    }
-  };
-
-  const exportFile = () => {
-    setAction(true);
-  };
-
-  const exportFleet = () => {
-    setAction(true);
-  };
-
-  const getFleetSpaces = async () => {
-    const getSpace: any = await instanceFleet.get("space");
-
-    setSpaceList([
-      ...getSpace.data.spaces.map((item) => {
-        return {
-          ...item,
-          key: item.id,
-        };
-      }),
-    ]);
-  };
-
-  const putGlbOnFleetSpace = (spaceId) => {
-    setFleet(spaceId, "fleet");
-    setTimeout(() => {
-      exportFleet();
-    }, 100);
-  };
-
-  const loadFleetSpace = () => {
-    getFleetSpaces();
-    setIsFleetModal(true);
-  };
-
-  const checkFleetLogin = () => {
-    try {
-      const isCookie = getCookie("token");
-      if (isCookie) {
-        setIsFleetLogin(true);
-      }
-    } catch (error) {}
-  };
-
-  const handleDone = (data) => {
-    setAreaData(data);
-    setCenter(data);
-    console.log(data, "AAEE");
-    setIsNextButtonDisabled(false);
-    setBuildings([]);
-    setHasFetchedBuildings(false);
-  };
-
-  const handleRemove = () => {
-    setAreaData([]);
-    setIsNextButtonDisabled(true);
-    setBuildings([]);
-    setHasFetchedBuildings(false);
-  };
-
-  const requestBuildings = async () => {
-    setIsFetchingBuildings(true);
-
-    const south = areaData[1].lat;
-    const west = areaData[1].lng;
-    const north = areaData[0].lat;
-    const east = areaData[0].lng;
-    const query = `[out:json][timeout:25];(way["building"]( ${south},${west},${north},${east} );relation["building"]( ${south},${west},${north},${east} ););out body geom;`;
-    try {
-      const response = await fetch("https://overpass-api.de/api/interpreter", {
-        method: "POST",
-        body: query,
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      });
-      const data = await response.json();
-      const blds: Building[] = data.elements.map((element) => ({
-        id: element.id,
-        tags: element.tags,
-        geometry: element.geometry
-          ? element.geometry.map((pt) => ({ lat: pt.lat, lng: pt.lon }))
-          : undefined,
-      }));
-      setBuildings(blds);
-      appendAreas(blds);
-      setHasFetchedBuildings(true);
-    } catch (error) {
-      console.error("Error fetching building data:", error);
-    } finally {
-      setIsFetchingBuildings(false);
-    }
-  };
-
-  const handleClickNextStep = async () => {
-    if (step == 0 && checkIsBig()) {
-      setIsWarnModal(true);
-      return false;
-    }
-    if (step == 1 && !hasFetchedBuildings) {
-      await requestBuildings();
-      return;
-    }
-    setStep(step + 1);
-  };
-
-  const handleClickPrevStep = () => {
-    setStep(step - 1);
-  };
-
-  const handleClickExport = () => {
-    setIsExportModal(true);
-  };
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [downloadOpen, setDownloadOpen] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState(false);
+  const select = useViewStore((s) => s.select);
 
   useEffect(() => {
-    checkFleetLogin();
-  }, []);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      setSettingsOpen(false);
+      if (!downloading) setDownloadOpen(false);
+      select(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [downloading, select]);
+
+  const handleDownload = async (bbox: BBox) => {
+    setDownloading(true);
+    setDownloadError(false);
+    try {
+      // the file follows the settings: roads only when shown, terrain (and buildings on it) when on
+      const { showRoads, terrain } = useViewStore.getState();
+      await exportAreaGLB(bbox, { roads: showRoads, terrain });
+      setDownloadOpen(false);
+      // show the downloaded area in the 3D view
+      const lat = (bbox.south + bbox.north) / 2;
+      const lng = (bbox.west + bbox.east) / 2;
+      const [x, z] = toScene(tileManager.origin, lat, lng);
+      const [ex, ez] = toScene(tileManager.origin, bbox.north, bbox.east);
+      goToPlace(lat, lng, Math.max(300, Math.hypot(ex - x, ez - z) * 1.6));
+    } catch (err) {
+      console.error("Download failed:", err);
+      setDownloadError(true);
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   return (
-    <div css={css({ height: "100%", width: "100%" })}>
-      <TopNav step={step} />
+    <div css={css({ position: "fixed", inset: 0 })}>
+      <Space />
 
-      <FullscreenModal isOpen={steps[step] == "front"}>
-        <Column gap="1rem">
-          <Column gap="0.5rem">
-            <Title>Generate 3d map</Title>
-            <Description>
-              Tools to create 3D maps based on maps and export them in GLB
-              format
-            </Description>
-          </Column>
-          <MapComponent
-            onRemove={handleRemove}
-            onDone={handleDone}
-          ></MapComponent>
-        </Column>
-      </FullscreenModal>
+      <TopBar
+        settingsOpen={settingsOpen}
+        onToggleSettings={() => setSettingsOpen((v) => !v)}
+        downloadOpen={downloadOpen}
+        onToggleDownload={() => {
+          setSettingsOpen(false);
+          setDownloadError(false);
+          setDownloadOpen((v) => !v);
+        }}
+        downloading={downloading}
+      />
+      <SettingsPanel open={settingsOpen} />
+      <BuildingPanel />
+      <DownloadMap
+        open={downloadOpen}
+        busy={downloading}
+        error={downloadError}
+        onClose={() => setDownloadOpen(false)}
+        onDownload={handleDownload}
+      />
+      <StatusPill />
 
-      <FullscreenModal isOpen={steps[step] == "processing"}>
-        <Column gap="1rem">
-          <Column gap="0.5rem">
-            <Title>Processing</Title>
-            <Description>
-              Click Next Step to fetch building information. Once loaded, click
-              Next Step again to view the 3D scene.
-            </Description>
-
-            <BuildingHeights
-              buildings={buildings}
-              loading={isFetchingBuildings}
-            />
-          </Column>
-        </Column>
-      </FullscreenModal>
-
-      <PrevButton isShow={step != 0} onClick={handleClickPrevStep}>
-        <ChevronLeft css={IconSize} /> Prev Step
-      </PrevButton>
-
-      <NextButton
-        isShow={step != 2}
-        disabled={isNextButtonDisabled || isFetchingBuildings}
-        onClick={handleClickNextStep}
+      <div
+        css={css({
+          position: "fixed",
+          right: 10,
+          bottom: 6,
+          left: 10,
+          zIndex: 10,
+          fontSize: 11,
+          lineHeight: 1.4,
+          textAlign: "right",
+          color: UI.icon,
+          textShadow: "0 0 3px rgba(255,255,255,0.9)",
+          pointerEvents: "none",
+        })}
       >
-        {isFetchingBuildings ? (
-          <>
-            <Loader2
-              css={[
-                IconSize,
-                css({ animation: `${spinAnimation} 1s linear infinite` }),
-              ]}
-            />
-            Fetching...
-          </>
-        ) : (
-          <>
-            Next Step <ChevronRight css={IconSize} />
-          </>
-        )}
-      </NextButton>
-
-      <NextButton isShow={step == 2} onClick={handleClickExport}>
-        Export GLB <Download css={IconSize} />
-      </NextButton>
-
-      <Modal isOpen={isWarnModal} onClose={() => setIsWarnModal(false)}>
-        <Column gap="0.5rem">
-          <Title>The area is too big </Title>
-          <Description>Do you want to proceed?</Description>
-          <Button
-            isShow={step != 2}
-            disabled={isNextButtonDisabled}
-            onClick={() => {
-              setStep(step + 1);
-              setIsWarnModal(false);
-            }}
-          >
-            Next Step <ChevronRight css={IconSize} />
-          </Button>
-        </Column>
-      </Modal>
-
-      <Modal isOpen={isExportModal} onClose={() => setIsExportModal(false)}>
-        <Column gap="0.5rem">
-          <Title>Export</Title>
-
-          <Row gap="0.5rem">
-            <Button isShow={true} onClick={exportFile}>
-              GLB Download <Download css={IconSize} />
-            </Button>
-
-            {/* {isFleetLogin ? (
-              <Button isShow={true} onClick={loadFleetSpace}>
-                Fleet Interlock
-              </Button>
-            ) : (
-              <Button
-                isShow={true}
-                onClick={() => window.open("https://fleet.im/auth")}
-              >
-                Fleet Login
-              </Button>
-            )} */}
-          </Row>
-        </Column>
-      </Modal>
-
-      <Modal isOpen={isFleetModal} onClose={() => setIsFleetModal(false)}>
-        <Column gap="0.5rem">
-          <Title>Select Fleet Space</Title>
-          {spaceList.map((item, index) => (
-            <Button isShow={true} onClick={() => putGlbOnFleetSpace(item.id)}>
-              {item.title}
-            </Button>
-          ))}
-        </Column>
-      </Modal>
-
-      <Space></Space>
+        <Attribution />
+      </div>
     </div>
   );
 }

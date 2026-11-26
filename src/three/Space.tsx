@@ -1,508 +1,357 @@
-import { useEffect, useState } from "react";
-import { Canvas, extend, ReactThreeFiber, useThree } from "@react-three/fiber";
-import { useAreaStore } from "@/state/areaStore";
-import { Html, Sky, Environment, Line } from "@react-three/drei";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import { Environment, MapControls, PerformanceMonitor } from "@react-three/drei";
 import * as THREE from "three";
-import { useActionStore } from "@/state/exportStore";
-import { GLTFExporter } from "three/examples/jsm/Addons.js";
-import Car from "./Car";
-import instanceFleet from "@/api/axios";
+import { DEFAULT_AREA, NamedBuilding, ORIGIN, useAreaStore } from "@/state/areaStore";
+import { useViewStore } from "@/state/viewStore";
+import { LEVELS } from "./tiles/levels";
+import { TileManager } from "./tiles/TileManager";
+import { fromScene, toScene } from "./tiles/geo";
 
-const scale = 51000;
+const BACKGROUND = "#f6f7f8";
 
-function Building({
-  shape,
-  extrudeSettings,
-  tags,
-}: {
-  shape: THREE.Shape;
-  extrudeSettings: any;
-  tags: any;
-}) {
-  const [hovered, setHovered] = useState(false);
-  const [clicked, setClicked] = useState(false);
-  const [hoverPos, setHoverPos] = useState<THREE.Vector3 | null>(null);
-  const [showTranslations, setShowTranslations] = useState(false);
-  const [showAdditionalInfo, setShowAdditionalInfo] = useState(false);
-  return (
-    <mesh
-      onPointerOver={(e) => {
-        setHovered(true);
-        e.stopPropagation();
-      }}
-      onPointerOut={(e) => {
-        setHovered(false);
-        e.stopPropagation();
-      }}
-      onPointerMove={(e) => {
-        setHoverPos(e.point.clone());
-        e.stopPropagation();
-      }}
-      onClick={(e) => {
-        setClicked(!clicked);
-        e.stopPropagation();
-      }}
-      rotation={[-Math.PI / 2, 0, 0]}
-      userData={{ exportToGLB: true }}
-    >
-      <extrudeGeometry args={[shape, extrudeSettings]} />
-      <meshStandardMaterial color={hovered || clicked ? "#007bff" : "#9da0a3"} />
-      {(hovered || clicked) && hoverPos && (
-        <Html position={[hoverPos.x, hoverPos.y + extrudeSettings.depth + 0.5, hoverPos.z]} center>
-          <div
-            role="dialog"
-            aria-label={tags.name || "Building Information"}
-            style={{
-              color: "#000000",
-              backgroundColor: "#ffffff96",
-              backdropFilter: "blur(8px)",
-              border: "none",
-              padding: "14px",
-              borderRadius: "10px",
-              fontFamily: "system-ui, -apple-system, sans-serif",
-              fontSize: "13px",
-              width: "200px",
-              boxShadow: "0 2px 14px rgba(0, 0, 0, 0.16)",
-              transition: "all 0.2s ease-in-out",
-            }}
-          >
-            <div
-              style={{
-                fontWeight: "600",
-                fontSize: "15px",
-                borderBottom: tags.name ? "1px solid rgba(0, 0, 0, 0.08)" : "none",
-                paddingBottom: tags.name ? "6px" : "0",
-                marginBottom: tags.name ? "8px" : "4px",
-              }}
-            >
-              {tags.name || "Building Information"}
-            </div>
-            {["building", "height", "building:levels", "amenity", "denomination"].map(
-              (key) =>
-                tags[key] &&
-                (key !== "building" || tags[key] !== "yes") && (
-                  <div
-                    key={key}
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      margin: "4px 0",
-                    }}
-                  >
-                    <span style={{ fontWeight: "500", color: "#5f6368" }}>
-                      {key === "building"
-                        ? "Type"
-                        : key === "height"
-                        ? "Height"
-                        : key === "building:levels"
-                        ? "Levels"
-                        : key === "amenity"
-                        ? "Facility"
-                        : key === "denomination"
-                        ? "Denomination"
-                        : key.replace(/_/g, " ")}
-                      :
-                    </span>
-                    <span style={{ textTransform: "capitalize" }}>
-                      {key === "height" ? `${tags[key]} m` : tags[key]}
-                    </span>
-                  </div>
-                )
-            )}
-            {[
-              "addr:street",
-              "addr:housenumber",
-              "addr:district",
-              "addr:city",
-              "addr:postcode",
-            ].some((key) => tags[key]) && (
-              <div
-                style={{
-                  margin: "10px 0 8px",
-                  borderTop: "1px solid rgba(0, 0, 0, 0.08)",
-                  paddingTop: "8px",
-                }}
-              >
-                <div style={{ fontWeight: "500", marginBottom: "4px", color: "#5f6368" }}>
-                  Address
-                </div>
-                <div style={{ marginLeft: "4px", fontSize: "12px", color: "#5f6368" }}>
-                  {[
-                    [tags["addr:street"], tags["addr:housenumber"]].filter(Boolean).join(" "),
-                    tags["addr:district"],
-                    tags["addr:city"],
-                    tags["addr:postcode"],
-                  ]
-                    .filter(Boolean)
-                    .join(", ")}
-                </div>
-              </div>
-            )}
-            {Object.entries(tags).filter(
-              ([key]) =>
-                ![
-                  "building",
-                  "name",
-                  "height",
-                  "building:levels",
-                  "source",
-                  "amenity",
-                  "denomination",
-                ].includes(key) &&
-                !key.startsWith("addr:") &&
-                !key.startsWith("name:") &&
-                !key.startsWith("alt_name:")
-            ).length > 0 && (
-              <div
-                style={{
-                  margin: "10px 0 4px",
-                  borderTop: "1px solid rgba(0, 0, 0, 0.08)",
-                  paddingTop: "8px",
-                }}
-              >
-                <div
-                  style={{
-                    fontWeight: "500",
-                    marginBottom: "4px",
-                    color: "#5f6368",
-                    cursor: "pointer",
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                  }}
-                  onClick={() => setShowAdditionalInfo(!showAdditionalInfo)}
-                >
-                  Additional Information
-                  <span>{showAdditionalInfo ? "▲" : "▼"}</span>
-                </div>
-                {showAdditionalInfo && (
-                  <div>
-                    {Object.entries(tags)
-                      .filter(
-                        ([key]) =>
-                          ![
-                            "building",
-                            "name",
-                            "height",
-                            "building:levels",
-                            "source",
-                            "amenity",
-                            "denomination",
-                          ].includes(key) &&
-                          !key.startsWith("addr:") &&
-                          !key.startsWith("name:") &&
-                          !key.startsWith("alt_name:")
-                      )
-                      .map(([key, value]) => {
-                        if (
-                          key === "description" ||
-                          (typeof value === "string" && value.length > 80)
-                        ) {
-                          return (
-                            <div key={key} style={{ margin: "8px 0" }}>
-                              <div
-                                style={{ fontWeight: "500", color: "#5f6368", marginBottom: "4px" }}
-                              >
-                                {key.charAt(0).toUpperCase() + key.slice(1).replace(/_/g, " ")}
-                              </div>
-                              <div
-                                style={{
-                                  textAlign: "left",
-                                  fontSize: "12px",
-                                  color: "#5f6368",
-                                  fontWeight: "400",
-                                  textWrap: "wrap",
-                                  whiteSpace: "pre-wrap",
-                                  lineHeight: "1.4",
-                                  backgroundColor: "rgba(0,0,0,0.02)",
-                                  padding: "6px 8px",
-                                  borderRadius: "4px",
-                                }}
-                              >
-                                {String(value)}
-                              </div>
-                            </div>
-                          );
-                        }
-                        return (
-                          <div
-                            key={key}
-                            style={{
-                              display: "flex",
-                              justifyContent: "space-between",
-                              margin: "4px 0",
-                            }}
-                          >
-                            <span
-                              style={{
-                                fontWeight: "700",
-                                color: "#5f6368",
-                                textAlign: "left",
-                              }}
-                            >
-                              {key.charAt(0).toUpperCase() + key.slice(1).replace(/_/g, " ")}:
-                            </span>
-                            <span
-                              style={{
-                                textTransform: "capitalize",
-                                fontWeight: "400",
-                                textAlign: "right",
-                              }}
-                            >
-                              {String(value)}
-                            </span>
-                          </div>
-                        );
-                      })}
-                  </div>
-                )}
-              </div>
-            )}
-            {Object.entries(tags).filter(([key]) => key.startsWith("name:")).length > 0 && (
-              <div
-                style={{
-                  margin: "10px 0 4px",
-                  borderTop: "1px solid rgba(0, 0, 0, 0.08)",
-                  paddingTop: "8px",
-                  textAlign: "right",
-                }}
-              >
-                <div
-                  style={{
-                    fontWeight: "500",
-                    marginBottom: "4px",
-                    color: "#5f6368",
-                    cursor: "pointer",
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                  }}
-                  onClick={() => setShowTranslations(!showTranslations)}
-                >
-                  Name Translations
-                  <span>{showTranslations ? "▲" : "▼"}</span>
-                </div>
-                {showTranslations && (
-                  <div>
-                    {Object.entries(tags)
-                      .filter(([key]) => key.startsWith("name:"))
-                      .map(([key, value]) => (
-                        <div
-                          key={key}
-                          style={{
-                            display: "flex",
-                            justifyContent: "space-between",
-                            margin: "4px 0",
-                          }}
-                        >
-                          <span style={{ fontWeight: "500", color: "#5f6368" }}>
-                            {key.replace("name:", "").toUpperCase()}:
-                          </span>
-                          <span style={{ textTransform: "capitalize" }}>{String(value)}</span>
-                        </div>
-                      ))}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </Html>
-      )}
-    </mesh>
-  );
-}
-
-function Roads({ area }: { area: any }) {
-  const [roads, setRoads] = useState<any[]>([]);
-  if (!area || area.length < 2) return null;
-  const refLat = (area[1].lat + area[0].lat) / 2;
-  const refLng = (area[1].lng + area[0].lng) / 2;
-
-  function project(lat: number, lng: number) {
-    const x = (lng - refLng) * scale * Math.cos((refLat * Math.PI) / 180);
-    const y = (lat - refLat) * scale;
-    return new THREE.Vector2(x, y);
+/** One manager for the whole session: tile meshes survive a Canvas remount (antialias change). */
+export const tileManager = new TileManager(ORIGIN, LEVELS[useViewStore.getState().level]);
+tileManager.onStats = (stats) => useAreaStore.getState().setStats(stats);
+tileManager.onCenter = (center) => useAreaStore.getState().setCenter(center);
+tileManager.onNamed = (tiles) => {
+  const named: NamedBuilding[] = [];
+  for (const t of tiles) {
+    const d = t.data;
+    if (d?.layer !== "building") continue;
+    for (const [index, label, sub] of d.names) named.push({ key: t.key, index, id: d.ids[index], label, sub });
   }
+  useAreaStore.getState().setNamed(named);
+};
 
-  useEffect(() => {
-    const south = area[1].lat;
-    const west = area[1].lng;
-    const north = area[0].lat;
-    const east = area[0].lng;
-    const query = `[out:json][timeout:25];(way["highway"](${south},${west},${north},${east}););out body geom;`;
-    fetch("https://overpass-api.de/api/interpreter", {
-      method: "POST",
-      body: query,
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    })
-      .then((response) => response.json())
-      .then((data) => {
-        setRoads(data.elements);
-      })
-      .catch((err) => console.error(err));
-  }, [area]);
-
-  return (
-    <>
-      {roads.map((road, index) => {
-        if (!road.geometry || road.geometry.length < 2) return null;
-
-        const points = road.geometry.map((pt: any) => {
-          const v = project(pt.lat, pt.lon);
-          return new THREE.Vector3(v.x, 0.1, -v.y);
-        });
-
-        const lineGeometry: any = new THREE.BufferGeometry().setFromPoints(points);
-
-        return (
-          <Line
-            points={points}
-            color="#34f516"
-            lineWidth={1}
-            userData={{ exportToGLB: true }}
-          ></Line>
-        );
-      })}
-    </>
-  );
+/**
+ * Show a place: fly there, or (more than ~44 km away) rebuild the scene around it and jump, instead of
+ * flying across the globe. `distance` is the camera distance in scene units.
+ */
+export function goToPlace(lat: number, lng: number, distance: number) {
+  const view = useViewStore.getState();
+  const [x, z] = toScene(tileManager.origin, lat, lng);
+  if (Math.hypot(x, z) > REBASE_DISTANCE) {
+    view.select(null);
+    tileManager.rebase(lat, lng);
+    view.flyTo(0, 0, distance, true);
+  } else {
+    view.flyTo(x, z, distance);
+  }
 }
 
-export function Export() {
-  const { scene } = useThree();
-  const action = useActionStore((state) => state.action);
-  const fleetSpaceId = useActionStore((state) => state.fleetSpaceId);
+const [nex, nez] = toScene(ORIGIN, DEFAULT_AREA.north, DEFAULT_AREA.east);
+const DEFAULT_EXTENT = Math.max(Math.abs(nex), Math.abs(nez)) * 2;
+const DEFAULT_CAMERA = new THREE.Vector3(0, DEFAULT_EXTENT * 0.55, DEFAULT_EXTENT * 0.6);
 
-  const exportType = useActionStore((state) => state.exportType);
+/** camera kept across Canvas remounts */
+const savedView = { position: DEFAULT_CAMERA.clone(), target: new THREE.Vector3() };
 
-  const setAction = useActionStore((state) => state.setAction);
+type Controls = THREE.EventDispatcher<{ start: object; change: object }> & {
+  target: THREE.Vector3;
+  update: () => void;
+};
+
+/** set while CameraRig eases the camera; ground following waits for it */
+let cameraAnimating = false;
+/** past this distance from the origin (≈ 44 km) the scene is rebuilt around the camera target */
+const REBASE_DISTANCE = 20000;
+/** the camera never goes lower than this above the ground (scene units) */
+const CAMERA_CLEARANCE = 12;
+
+function TileLayer() {
+  const { scene, gl, invalidate } = useThree();
+  const showRoads = useViewStore((s) => s.showRoads);
+  const terrain = useViewStore((s) => s.terrain);
+  const groundMap = useViewStore((s) => s.groundMap);
+  const level = useViewStore((s) => s.level);
 
   useEffect(() => {
-    if (action === true) {
-      setAction(false);
-      exportGLB();
+    tileManager.onChange = () => invalidate();
+    tileManager.anisotropy = Math.min(8, gl.capabilities.getMaxAnisotropy());
+    scene.fog = new THREE.Fog(BACKGROUND, 1000, 2000);
+    return () => {
+      scene.fog = null;
+    };
+  }, [scene, gl, invalidate]);
+
+  useEffect(() => {
+    tileManager.setConfig(LEVELS[level]);
+    invalidate();
+  }, [level, invalidate]);
+
+  useEffect(() => {
+    tileManager.showRoads = showRoads;
+    invalidate();
+  }, [showRoads, invalidate]);
+
+  useEffect(() => {
+    tileManager.setGround(terrain, groundMap);
+    invalidate();
+  }, [terrain, groundMap, invalidate]);
+
+  useFrame((state) => {
+    const controls = state.controls as unknown as Controls | null;
+    const camera = state.camera as THREE.PerspectiveCamera;
+    const target = controls?.target ?? savedView.target;
+
+    // keep coordinates small (float precision, projection accuracy): re-center after long pans
+    if (controls && Math.hypot(target.x, target.z) > REBASE_DISTANCE && !cameraAnimating) {
+      const ll = fromScene(tileManager.origin, target.x, target.z);
+      tileManager.rebase(ll.lat, ll.lng);
+      camera.position.x -= target.x;
+      camera.position.z -= target.z;
+      target.set(0, target.y, 0);
+      controls.update();
+      useViewStore.getState().select(null);
     }
-  }, [action, setAction, scene]);
 
-  const uploadFleet = async (blob) => {
-    const formData = new FormData();
+    if (tileManager.update(camera, target, state.scene, performance.now())) invalidate();
 
-    formData.append("object", blob, "box3d.glb");
-    formData.append("title", "New Object");
-    formData.append("description", "");
-    formData.append("spaceId", fleetSpaceId);
-
-    await instanceFleet.post("space/file/mesh", formData, {
-      headers: {
-        "Content-Type": "multipart/form-data",
-      },
-    });
-  };
-
-  const exportGLB = () => {
-    const exportRoot = new THREE.Group();
-    scene.traverse((child) => {
-      if (child.userData?.exportToGLB === true) {
-        exportRoot.add(child.clone(true));
+    // the orbit target rests on the ground, and the camera stays above it
+    if (controls && !cameraAnimating) {
+      let moved = false;
+      const gh = tileManager.groundHeightAt(target.x, target.z);
+      if (gh !== null && Math.abs(gh - target.y) > 0.05) {
+        const step = (gh - target.y) * 0.25;
+        target.y += step;
+        camera.position.y += step;
+        moved = true;
       }
-    });
-    const exporter = new GLTFExporter();
-    const options = { binary: true, embedImages: true };
-    exporter.parse(
-      exportRoot,
-      (result) => {
-        if (result instanceof ArrayBuffer) {
-          const blob = new Blob([result], { type: "model/gltf-binary" });
+      const ch = tileManager.groundHeightAt(camera.position.x, camera.position.z);
+      if (ch !== null && camera.position.y < ch + CAMERA_CLEARANCE) {
+        camera.position.y = ch + CAMERA_CLEARANCE;
+        moved = true;
+      }
+      if (moved) {
+        controls.update();
+        invalidate();
+      }
+    }
+  });
 
-          if (exportType == "glb") {
-            const link = document.createElement("a");
-            link.style.display = "none";
-            document.body.appendChild(link);
-            link.href = URL.createObjectURL(blob);
-            link.download = "scene.glb";
-            link.click();
-            document.body.removeChild(link);
-          }
+  return <primitive object={tileManager.group} />;
+}
 
-          if (exportType == "fleet") {
-            uploadFleet(blob);
-          }
-        } else {
-          console.error("GLB export failed: unexpected result", result);
+/** Hover highlight (mouse only) and click-to-select, with ray picking on per-building boxes. */
+function Picker() {
+  const { gl, camera, invalidate } = useThree();
+  const select = useViewStore((s) => s.select);
+
+  useEffect(() => {
+    const el = gl.domElement;
+    const raycaster = new THREE.Raycaster();
+    const ndc = new THREE.Vector2();
+    let down: { x: number; y: number; t: number } | null = null;
+    let lastMove = 0;
+    let pending: number | null = null;
+
+    const pickAt = (clientX: number, clientY: number) => {
+      const r = el.getBoundingClientRect();
+      ndc.set(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1);
+      raycaster.setFromCamera(ndc, camera);
+      return tileManager.pick(raycaster.ray);
+    };
+    const hoverAt = (x: number, y: number) => {
+      const hit = pickAt(x, y);
+      if (tileManager.setHover(hit)) invalidate();
+      el.style.cursor = hit ? "pointer" : "";
+    };
+
+    const onDown = (e: PointerEvent) => {
+      down = { x: e.clientX, y: e.clientY, t: performance.now() };
+    };
+    const onUp = (e: PointerEvent) => {
+      if (!down) return;
+      const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
+      const quick = performance.now() - down.t < 600;
+      down = null;
+      if (moved > 6 || !quick) return; // that was a drag (pan / rotate)
+      const hit = pickAt(e.clientX, e.clientY);
+      if (!hit) return;
+      const cur = useViewStore.getState().selected;
+      if (cur && cur.key === hit.tile.key && cur.index === hit.index) {
+        select(null);
+        return;
+      }
+      const info = tileManager.describe(hit.tile.key, hit.index);
+      if (info) select({ key: info.key, index: info.index, id: info.id, tags: info.tags });
+    };
+    // hover: mouse only, not while a button is held (dragging), throttled
+    const onMove = (e: PointerEvent) => {
+      if (e.pointerType !== "mouse" || e.buttons) return;
+      const now = performance.now();
+      if (now - lastMove < 50) {
+        if (pending === null) {
+          const { clientX, clientY } = e;
+          pending = window.setTimeout(() => {
+            pending = null;
+            lastMove = performance.now();
+            hoverAt(clientX, clientY);
+          }, 50);
         }
-      },
-      (error) => {
-        console.error("An error occurred during export", error);
-      },
-      options
-    );
+        return;
+      }
+      lastMove = now;
+      hoverAt(e.clientX, e.clientY);
+    };
+    const onLeave = () => {
+      if (tileManager.setHover(null)) invalidate();
+      el.style.cursor = "";
+    };
+
+    el.addEventListener("pointerdown", onDown);
+    el.addEventListener("pointerup", onUp);
+    el.addEventListener("pointermove", onMove);
+    el.addEventListener("pointerleave", onLeave);
+    return () => {
+      el.removeEventListener("pointerdown", onDown);
+      el.removeEventListener("pointerup", onUp);
+      el.removeEventListener("pointermove", onMove);
+      el.removeEventListener("pointerleave", onLeave);
+      if (pending !== null) clearTimeout(pending);
+    };
+  }, [gl, camera, invalidate, select]);
+
+  const selected = useViewStore((s) => s.selected);
+  useEffect(() => {
+    tileManager.setSelected(selected ? { key: selected.key, index: selected.index } : null);
+    invalidate();
+  }, [selected, invalidate]);
+
+  return null;
+}
+
+/** Eased camera moves: +/- zoom, fly to a searched building or a downloaded area. Dragging cancels them. */
+function CameraRig() {
+  const { camera, invalidate } = useThree();
+  const controls = useThree((s) => s.controls) as unknown as Controls | null;
+  const zoomRequest = useViewStore((s) => s.zoomRequest);
+  const focusRequest = useViewStore((s) => s.focusRequest);
+  const flyRequest = useViewStore((s) => s.flyRequest);
+  const select = useViewStore((s) => s.select);
+  const goal = useRef<{ position: THREE.Vector3; target: THREE.Vector3 } | null>(null);
+
+  useEffect(() => {
+    if (!controls) return;
+    camera.position.copy(savedView.position);
+    controls.target.copy(savedView.target);
+    controls.update();
+    const cancel = () => (goal.current = null);
+    controls.addEventListener("start", cancel);
+    return () => controls.removeEventListener("start", cancel);
+  }, [controls, camera]);
+
+  const go = (position: THREE.Vector3, target: THREE.Vector3) => {
+    goal.current = { position, target };
+    invalidate();
   };
+
+  useEffect(() => {
+    if (!zoomRequest.seq || !controls) return;
+    const target = goal.current?.target ?? controls.target.clone();
+    const from = goal.current?.position ?? camera.position;
+    const offset = from.clone().sub(target).multiplyScalar(zoomRequest.factor);
+    const max = LEVELS[useViewStore.getState().level].maxDistance;
+    offset.setLength(Math.min(max, Math.max(20, offset.length())));
+    go(target.clone().add(offset), target);
+  }, [zoomRequest]);
+
+  useEffect(() => {
+    if (!focusRequest.seq || !controls || !focusRequest.ref) return;
+    const info = tileManager.describe(focusRequest.ref.key, focusRequest.ref.index);
+    if (!info) return;
+    select({ key: info.key, index: info.index, id: info.id, tags: info.tags });
+    const dir = camera.position.clone().sub(controls.target).normalize();
+    go(info.center.clone().addScaledVector(dir, Math.max(info.height * 4, 150)), info.center);
+  }, [focusRequest]);
+
+  useEffect(() => {
+    if (!flyRequest.seq || !controls) return;
+    const d = flyRequest.distance;
+    const y = tileManager.groundHeightAt(flyRequest.x, flyRequest.z) ?? controls.target.y;
+    const target = new THREE.Vector3(flyRequest.x, y, flyRequest.z);
+    const position = new THREE.Vector3(flyRequest.x, y + d * 0.55, flyRequest.z + d * 0.6);
+    if (flyRequest.instant) {
+      goal.current = null;
+      camera.position.copy(position);
+      controls.target.copy(target);
+      controls.update();
+      invalidate();
+      return;
+    }
+    go(position, target);
+  }, [flyRequest]);
+
+  useFrame(() => {
+    const g = goal.current;
+    if (g) {
+      camera.position.lerp(g.position, 0.15);
+      if (controls) {
+        controls.target.lerp(g.target, 0.15);
+        controls.update();
+      }
+      if (camera.position.distanceTo(g.position) < 0.5) goal.current = null;
+      invalidate();
+    }
+    cameraAnimating = goal.current !== null;
+    savedView.position.copy(camera.position);
+    if (controls) savedView.target.copy(controls.target);
+  });
+
+  return null;
+}
+
+/** dev only: lets the benchmark script drive the camera and read tile stats */
+function DevHook() {
+  const get = useThree((s) => s.get);
+  useEffect(() => {
+    if (import.meta.env.DEV) Object.assign(window as any, { __r3f: { get }, __tiles: tileManager, __areaStore: useAreaStore, __viewStore: useViewStore });
+  }, [get]);
   return null;
 }
 
 export function Space() {
-  const areas = useAreaStore((state) => state.areas);
-  const [realCenter, setRealCenter] = useState<any>();
-  const center = useAreaStore((state) => state.center);
-  const refLat = (center[1].lat + center[0].lat) / 2;
-  const refLng = (center[1].lng + center[0].lng) / 2;
-
-  function project(lat: number, lng: number) {
-    const x = (lng - refLng) * scale * Math.cos((refLat * Math.PI) / 180);
-    const y = (lat - refLat) * scale;
-    return new THREE.Vector2(x, y);
-  }
-
-  const areaData = () => {
-    const result: Array<{
-      shape: THREE.Shape;
-      extrudeSettings: any;
-      tags: any;
-    }> = [];
-    areas.forEach((bld: any) => {
-      if (!bld.geometry || bld.geometry.length < 3) return;
-      const shapePoints = bld.geometry.map((pt: any) => project(pt.lat, pt.lng));
-      if (!shapePoints[0].equals(shapePoints[shapePoints.length - 1]))
-        shapePoints.push(shapePoints[0]);
-      const shape = new THREE.Shape(shapePoints);
-      let heightValue = parseFloat(bld.tags.height || "");
-      const heightLevels = parseFloat(bld.tags["building:levels"] || "");
-      if (isNaN(heightValue)) heightValue = 10;
-      if (!isNaN(heightLevels)) heightValue = heightLevels * 2.2;
-      const extrudeSettings = {
-        steps: 1,
-        depth: heightValue,
-        bevelEnabled: false,
-      };
-      result.push({ shape, extrudeSettings, tags: bld.tags });
-    });
-    return result;
-  };
-
-  useEffect(() => {
-    setRealCenter(center);
-  }, [areas]);
-
-  const buildingsData = areaData();
+  const level = useViewStore((s) => s.level);
+  const cfg = LEVELS[level];
+  const maxDpr = Math.min(cfg.dpr, window.devicePixelRatio || 1);
+  const [dpr, setDpr] = useState(maxDpr);
+  useEffect(() => setDpr(maxDpr), [maxDpr]);
+  const glOptions = useMemo(() => ({ antialias: cfg.antialias, powerPreference: "high-performance" as const }), [cfg.antialias]);
 
   return (
-    <Canvas camera={{ fov: 90, near: 0.1, far: 7000 }}>
+    <Canvas
+      // a new WebGL context is needed to switch antialiasing
+      key={cfg.antialias ? "aa" : "no-aa"}
+      frameloop="demand"
+      dpr={dpr}
+      gl={glOptions}
+      camera={{ fov: 60, near: 1, far: 6000, position: DEFAULT_CAMERA.toArray() }}
+    >
+      {/* adaptive resolution: lower the pixel ratio while frames are slow, restore it when they recover */}
+      <PerformanceMonitor
+        onDecline={() => setDpr((d) => Math.max(1, +(d * 0.75).toFixed(2)))}
+        onIncline={() => setDpr((d) => Math.min(maxDpr, +(d * 1.25).toFixed(2)))}
+      />
+      <color attach="background" args={[BACKGROUND]} />
       <ambientLight intensity={Math.PI / 2} />
       <spotLight position={[10, 10, 10]} angle={0.15} penumbra={1} decay={0} intensity={Math.PI} />
-      {buildingsData.map((item, index) => (
-        <Building
-          key={index}
-          shape={item.shape}
-          extrudeSettings={item.extrudeSettings}
-          tags={item.tags}
-        />
-      ))}
-
-      <Roads area={realCenter} />
       <pointLight position={[-10, -10, -10]} decay={0} intensity={Math.PI} />
-      <Car />
-      <Export />
-      <Sky distance={450000} sunPosition={[0, 1, 0]} inclination={0} azimuth={0.25} />
-      <Environment preset="city" />
+      {!cfg.pbr && <directionalLight position={[300, 800, 400]} intensity={1.2} />}
+      <MapControls
+        makeDefault
+        enableDamping
+        dampingFactor={0.12}
+        screenSpacePanning={false}
+        maxPolarAngle={1.35}
+        minDistance={20}
+        maxDistance={cfg.maxDistance}
+      />
+      <TileLayer />
+      <Picker />
+      <CameraRig />
+      <DevHook />
+      {cfg.pbr && <Environment preset="city" />}
     </Canvas>
   );
 }
