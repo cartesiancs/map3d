@@ -118,9 +118,27 @@ export function DownloadMap({
             boxSizing: "border-box",
             fontSize: 14,
             color: UI.text,
+            // too narrow for one row: the message on top, the buttons below
+            [mobile]: {
+              left: 12,
+              right: 12,
+              transform: "none",
+              maxWidth: "none",
+              flexWrap: "wrap",
+              gap: 8,
+              padding: 8,
+              borderRadius: 25,
+            },
           })}
         >
-          <span css={css({ overflow: "hidden", textOverflow: "ellipsis" })}>
+          <span
+            css={css({
+              minWidth: 0,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              [mobile]: { flexBasis: "100%", whiteSpace: "normal", padding: "4px 8px 0", fontSize: 13, lineHeight: 1.4 },
+            })}
+          >
             {error && !busy
               ? "Could not load this area. Try again."
               : busy
@@ -134,7 +152,11 @@ export function DownloadMap({
           <button css={[pillButton, css({ padding: "0 14px", fontSize: 14, color: UI.text })]} onClick={onClose} disabled={busy}>
             Cancel
           </button>
-          <button css={primaryButton} disabled={!selection || busy} onClick={() => selection && onDownload(selection)}>
+          <button
+            css={[primaryButton, css({ [mobile]: { flexGrow: 1 } })]}
+            disabled={!selection || busy}
+            onClick={() => selection && onDownload(selection)}
+          >
             {busy ? (
               <Loader2 css={[iconSize(15), css({ animation: `${spin} 1s linear infinite` })]} />
             ) : (

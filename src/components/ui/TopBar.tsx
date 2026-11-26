@@ -60,7 +60,7 @@ function SearchBox() {
   };
 
   return (
-    <div css={css({ position: "relative", width: 464, [mobile]: { width: "100%" } })}>
+    <div css={css({ position: "relative", width: "100%" })}>
       <label
         css={css({
           height: UI.barHeight,
@@ -342,13 +342,14 @@ function AccountButton() {
         </button>
       ) : (
         <button
-          css={[pillButton, css({ padding: "0 14px 0 12px", fontSize: 14, fontWeight: 600, color: UI.text, [mobile]: { padding: 0, width: UI.barHeight } })]}
+          css={[pillButton, css({ padding: "0 14px 0 12px", fontSize: 14, fontWeight: 600, [mobile]: { padding: 0, width: UI.barHeight } })]}
           aria-label="Sign in with GitHub"
           title="Sign in with GitHub"
           onClick={signIn}
         >
-          <LogIn css={iconSize(16)} />
-          <span css={css({ [mobile]: { display: "none" } })}>Sign in</span>
+          {/* the bracket on the right carries most of the glyph's weight: alone in the circle it is nudged 1px left to look centred */}
+          <LogIn css={[iconSize(16), css({ [mobile]: { transform: "translateX(-1px)" } })]} />
+          <span css={css({ color: UI.text, [mobile]: { display: "none" } })}>Sign in</span>
         </button>
       )}
 
@@ -440,7 +441,8 @@ export function TopBar({
         left: UI.sideLeft,
         right: UI.side,
         display: "grid",
-        gridTemplateColumns: "1fr auto 1fr",
+        // the search box gives up width before the buttons on either side do
+        gridTemplateColumns: "1fr minmax(0, 464px) 1fr",
         alignItems: "center",
         gap: 16,
         zIndex: 30,
@@ -495,12 +497,13 @@ export function TopBar({
           onClick={onToggleDownload}
           disabled={downloading}
         >
+          {/* 16px like the other bar icons: an odd size leaves a half-pixel offset inside the 34px circle */}
           {downloading ? (
-            <Loader2 css={[iconSize(15), css({ animation: `${spin} 1s linear infinite` })]} />
+            <Loader2 css={[iconSize(16), css({ animation: `${spin} 1s linear infinite` })]} />
           ) : downloadOpen ? (
-            <X css={iconSize(15)} />
+            <X css={iconSize(16)} />
           ) : (
-            <Download css={iconSize(15)} />
+            <Download css={iconSize(16)} />
           )}
           <span css={css({ [mobile]: { display: "none" } })}>
             {downloading ? "Preparing" : downloadOpen ? "Close" : "Download"}
