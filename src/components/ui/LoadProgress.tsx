@@ -4,11 +4,11 @@ import { Check } from "lucide-react";
 import { useAreaStore } from "@/state/areaStore";
 import { UI, iconSize } from "./styles";
 
-/** the size of the round buttons, so it lines up with the settings button above it */
-const SIZE = UI.barHeight;
-const STROKE = 2.5;
-/** ring radius: 2 px of the disc around it */
-const R = SIZE / 2 - 2 - STROKE / 2;
+/** small, in the corner on the credits line (about one line of the credits tall) */
+const SIZE = 18;
+const STROKE = 2;
+/** ring radius: 1.5 px of the disc around it */
+const R = SIZE / 2 - 1.5 - STROKE / 2;
 const CIRCUMFERENCE = 2 * Math.PI * R;
 /** a load that finishes faster than this never shows the ring (no flash on cached tiles) */
 const SHOW_AFTER_MS = 250;
@@ -41,6 +41,7 @@ export function LoadProgress() {
       aria-hidden={!shown}
       css={css({
         position: "relative",
+        flexShrink: 0,
         width: SIZE,
         height: SIZE,
         borderRadius: "50%",
@@ -67,7 +68,7 @@ export function LoadProgress() {
       </svg>
       {complete && (
         <span css={css({ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" })}>
-          <Check css={[iconSize(13), css({ color: UI.accent })]} strokeWidth={3} />
+          <Check css={[iconSize(9), css({ color: UI.accent })]} strokeWidth={4} />
         </span>
       )}
     </div>

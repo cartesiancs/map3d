@@ -10,7 +10,7 @@ import { MapContextMenu } from "@/components/ui/MapContextMenu";
 import { HeightEditor } from "@/components/ui/HeightEditor";
 import { ContributionsPanel } from "@/components/ui/ContributionsPanel";
 import { LoadProgress } from "@/components/ui/LoadProgress";
-import { UI, iconSize, mobile, spin } from "@/components/ui/styles";
+import { UI, iconSize, spin } from "@/components/ui/styles";
 import { START_VIEW, useAreaStore } from "@/state/areaStore";
 import { useViewStore } from "@/state/viewStore";
 import { useAuthStore } from "@/state/authStore";
@@ -184,7 +184,8 @@ function App() {
       />
       <StatusPill />
 
-      {/* bottom edge: the loading ring (left, under the settings button) above the credits, which may wrap on phones */}
+      {/* bottom edge, one row: the loading ring in the bottom left corner, the credits on the right. The ring keeps
+          its place while hidden, so the credits never reflow, and they wrap beside it (phones) instead of under it. */}
       <div
         css={css({
           position: "fixed",
@@ -193,19 +194,16 @@ function App() {
           left: 10,
           zIndex: 10,
           display: "flex",
-          flexDirection: "column",
-          alignItems: "flex-start",
-          gap: 10,
+          alignItems: "flex-end",
+          gap: 8,
           pointerEvents: "none",
-          [mobile]: { gap: 8 },
         })}
       >
-        <div css={css({ marginLeft: UI.sideLeft - 10, [mobile]: { marginLeft: 16 - 10 } })}>
-          <LoadProgress />
-        </div>
+        <LoadProgress />
         <div
           css={css({
-            alignSelf: "stretch",
+            flex: 1,
+            minWidth: 0,
             fontSize: 11,
             lineHeight: 1.4,
             textAlign: "right",
