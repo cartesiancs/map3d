@@ -62,6 +62,9 @@ export const pillButton = css({
   justifyContent: "center",
   gap: 6,
   padding: 0,
+  // a single-line control: never narrower than its label (minWidth replaces the flex item's content minimum)
+  flexShrink: 0,
+  whiteSpace: "nowrap",
   cursor: "pointer",
   transition: "background-color .15s",
   ":hover": { backgroundColor: UI.surfaceHover },
