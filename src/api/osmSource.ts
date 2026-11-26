@@ -1,6 +1,8 @@
 // Self-hosted replacement for the two Overpass queries (buildings, roads).
 //
-// Data: PMTiles archives on Cloudflare R2 built by the map3d-osm pipeline. Every z14 tile holds, unclipped,
+// Data: PMTiles archives on Cloudflare R2 built by the map3d-osm pipeline, and for the layers that are also
+// published tile by tile (tools/tiles; manifest.json `tiles`), one CDN-cached object per tile (tileFiles.ts).
+// Every z14 tile holds, unclipped,
 // each OSM feature that touches it, as gzip JSON:
 //   { v: 1, z, x, y, f: [{ t: "w" | "r", id, tags, g: parts -> rings -> [lon0, lat0, dlon1, dlat1, ...] }] }
 // with coordinates in 1e-7 degree integers (first point absolute, then deltas).
@@ -8,7 +10,8 @@
 // segment crossing it, which matches what Overpass returns for `way[...](bbox)` / `relation[...](bbox)`.
 
 import { EtagMismatch, FetchSource, PMTiles, RangeResponse, SharedPromiseCache, Source } from "pmtiles";
-import { fetchRetry, isTransient, withRetry } from "./retry";
+import { StallError, fetchBytes, isTransient, withRetry } from "./retry";
+import { FileTileSource, TileSource, usableTileSet } from "./tileFiles";
 import { OverlayTile, fetchOverlayTile, overlayIndexCached } from "./overlay";
 import { ArchiveRpc, CachingSource, IN_WORKER, RemoteCache, RpcReply, callMain } from "./pmtilesShared";
 
@@ -28,11 +31,19 @@ export type OsmFeature = {
   /** way: [[line]]; relation: polygons -> rings (ring 0 outer, then holes) */
   parts: Ring[][];
 };
-/** `water`: sea polygons as z10 tiles (optional: older manifests have none) */
-type Manifest = { version: string; buildings: string; roads: string; osmTimestamp: string; water?: string };
+type Layer = "buildings" | "roads" | "water";
+/** tile zoom of each layer (water: WATER_Z in three/tiles/water.ts) */
+const LAYER_ZOOM: Record<Layer, number> = { buildings: ZOOM, roads: ZOOM, water: 10 };
+/** `water`: sea polygons as z10 tiles (optional: older manifests have none).
+ *  `tiles`: layers also published as one object per tile (tools/tiles), used when they match the archive. */
+type Manifest = { version: string; buildings: string; roads: string; osmTimestamp: string; water?: string; tiles?: Partial<Record<Layer, unknown>> };
 type TileFeature = { t: "w" | "r"; id: number; tags: Record<string, string>; g: number[][][] };
 
-/** PMTiles range reads with retries of transient failures (an ETag change is left to PMTiles, which reloads) */
+/** a range read is small (one tile or directory); past this it has stalled */
+const RANGE_TIMEOUT_MS = 45_000;
+
+/** PMTiles range reads with a time limit and retries of transient failures (an ETag change is left to PMTiles,
+ *  which reloads) */
 class RetrySource implements Source {
   private inner: FetchSource;
   constructor(url: string) {
@@ -43,13 +54,27 @@ class RetrySource implements Source {
   }
   getBytes(offset: number, length: number, signal?: AbortSignal, etag?: string): Promise<RangeResponse> {
     return withRetry(
-      () => this.inner.getBytes(offset, length, signal, etag),
+      async () => {
+        const ctrl = new AbortController();
+        const forward = () => ctrl.abort();
+        signal?.addEventListener("abort", forward);
+        const timer = setTimeout(() => ctrl.abort(), RANGE_TIMEOUT_MS);
+        try {
+          return await this.inner.getBytes(offset, length, ctrl.signal, etag);
+        } catch (err) {
+          if (ctrl.signal.aborted && !signal?.aborted) throw new StallError(`${this.getKey()} bytes ${offset}+${length}: timed out`);
+          throw err;
+        } finally {
+          clearTimeout(timer);
+          signal?.removeEventListener("abort", forward);
+        }
+      },
       (err) => !(err instanceof EtagMismatch) && !signal?.aborted && isTransient(err),
     );
   }
 }
 
-type Archives = { buildings: PMTiles; roads: PMTiles; water: PMTiles | null; manifest: Manifest };
+type Archives = { buildings: TileSource; roads: TileSource; water: TileSource | null; manifest: Manifest };
 let archives: Promise<Archives> | null = null;
 
 // Main thread: the one place that reads manifest.json, headers and directories (workers ask it, see
@@ -60,10 +85,7 @@ const remoteCache = IN_WORKER ? new RemoteCache() : null;
 
 function loadManifest(): Promise<Manifest> {
   if (IN_WORKER) return callMain<Manifest>({ op: "manifest" });
-  return fetchRetry(`${DATA_URL}/manifest.json`).then((res) => {
-    if (!res.ok) throw new Error(`OSM manifest: HTTP ${res.status}`);
-    return res.json() as Promise<Manifest>;
-  });
+  return fetchBytes(`${DATA_URL}/manifest.json`).then((buf) => JSON.parse(new TextDecoder().decode(buf!)) as Manifest);
 }
 
 /** retries inside, cached tile bytes outside: a retried read is cached once it succeeds */
@@ -75,13 +97,23 @@ function openArchive(file: string) {
   return new PMTiles(source, mainCache!);
 }
 
+/** the layer's published tiles when the manifest lists them for this archive, else its PMTiles archive */
+function openLayer(manifest: Manifest, layer: Layer): TileSource | null {
+  const archivePath = manifest[layer];
+  if (!archivePath) return null;
+  const listed = manifest.tiles?.[layer];
+  const set = listed ? usableTileSet(listed, archivePath, LAYER_ZOOM[layer]) : null;
+  if (listed && !set) console.warn(`manifest tiles.${layer} does not match ${archivePath}: reading the archive`);
+  return set ? new FileTileSource(DATA_URL, set) : openArchive(archivePath);
+}
+
 export function getArchives() {
   archives ??= loadManifest()
     .then((manifest) => ({
       manifest,
-      buildings: openArchive(manifest.buildings),
-      roads: openArchive(manifest.roads),
-      water: manifest.water ? openArchive(manifest.water) : null,
+      buildings: openLayer(manifest, "buildings")!,
+      roads: openLayer(manifest, "roads")!,
+      water: openLayer(manifest, "water"),
     }))
     .catch((err) => {
       archives = null; // allow a retry on the next request
@@ -192,7 +224,7 @@ async function overlayFor(bbox: BBox): Promise<OverlayTile> {
   return { hide: tiles.flatMap((t) => t.hide), add: tiles.flatMap((t) => t.add) };
 }
 
-async function queryArchive(archive: PMTiles, bbox: BBox, overlay: OverlayTile | null = null): Promise<OsmFeature[]> {
+async function queryArchive(archive: TileSource, bbox: BBox, overlay: OverlayTile | null = null): Promise<OsmFeature[]> {
   const hidden = new Set(overlay?.hide ?? []);
   const n = 2 ** ZOOM;
   const clamp = (v: number) => Math.max(0, Math.min(n - 1, v));
@@ -210,7 +242,7 @@ async function queryArchive(archive: PMTiles, bbox: BBox, overlay: OverlayTile |
   async function worker() {
     while (next < coords.length) {
       const [x, y] = coords[next++];
-      const tile = await archive.getZxy(ZOOM, x, y); // pmtiles decompresses gzip tiles
+      const tile = await archive.getZxy(ZOOM, x, y); // plain JSON bytes from either source
       if (!tile) continue;
       const { f } = JSON.parse(decoder.decode(tile.data)) as { f: TileFeature[] };
       for (const feat of f) {

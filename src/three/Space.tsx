@@ -2,13 +2,14 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Environment, MapControls, PerformanceMonitor } from "@react-three/drei";
 import * as THREE from "three";
-import { DEFAULT_AREA, NamedBuilding, ORIGIN, useAreaStore } from "@/state/areaStore";
+import { DEFAULT_AREA, DEFAULT_CENTER, NamedBuilding, ORIGIN, START_VIEW, useAreaStore } from "@/state/areaStore";
+import { saveLastView } from "@/state/lastView";
 import { useViewStore } from "@/state/viewStore";
 import { useContribStore } from "@/state/contribStore";
 import { LEVELS } from "./tiles/levels";
 import { SCENE_COLORS, TileManager } from "./tiles/TileManager";
 import { useThemeStore } from "@/state/theme";
-import { fromScene, toScene } from "./tiles/geo";
+import { fromScene, makeOrigin, toScene } from "./tiles/geo";
 import { fetchOverlayIndex } from "@/api/overlay";
 
 
@@ -71,9 +72,12 @@ export function goToPlace(lat: number, lng: number, distance: number) {
   }
 }
 
-const [nex, nez] = toScene(ORIGIN, DEFAULT_AREA.north, DEFAULT_AREA.east);
+const [nex, nez] = toScene(makeOrigin(DEFAULT_CENTER.lat, DEFAULT_CENTER.lng), DEFAULT_AREA.north, DEFAULT_AREA.east);
 const DEFAULT_EXTENT = Math.max(Math.abs(nex), Math.abs(nez)) * 2;
-const DEFAULT_CAMERA = new THREE.Vector3(0, DEFAULT_EXTENT * 0.55, DEFAULT_EXTENT * 0.6);
+/** first camera: as the last visit left it (target at the origin), else over the default area */
+const DEFAULT_CAMERA = START_VIEW
+  ? new THREE.Vector3(...START_VIEW.offset)
+  : new THREE.Vector3(0, DEFAULT_EXTENT * 0.55, DEFAULT_EXTENT * 0.6);
 
 /** camera kept across Canvas remounts */
 const savedView = { position: DEFAULT_CAMERA.clone(), target: new THREE.Vector3() };
@@ -318,6 +322,26 @@ function CameraRig() {
     const cancel = () => (goal.current = null);
     controls.addEventListener("start", cancel);
     return () => controls.removeEventListener("start", cancel);
+  }, [controls, camera]);
+
+  // remember the view for the next visit: each second while it settles, and when the page is hidden or left.
+  // The target and the origin change together (rebase), so reading both here is always consistent.
+  useEffect(() => {
+    if (!controls) return;
+    const save = () => {
+      const t = controls.target;
+      const ll = fromScene(tileManager.origin, t.x, t.z);
+      saveLastView({ lat: ll.lat, lng: ll.lng, offset: [camera.position.x - t.x, camera.position.y - t.y, camera.position.z - t.z] });
+    };
+    const timer = window.setInterval(() => !cameraAnimating && save(), 1000);
+    const onVisibility = () => document.visibilityState === "hidden" && save();
+    window.addEventListener("pagehide", save);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("pagehide", save);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [controls, camera]);
 
   const go = (position: THREE.Vector3, target: THREE.Vector3) => {
