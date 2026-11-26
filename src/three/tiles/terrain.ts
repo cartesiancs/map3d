@@ -9,7 +9,7 @@
 // the triangles the mesh uses. Buildings, roads and the camera use it, so nothing floats or sinks.
 
 import { Origin, fromScene, latToTileYf, lngToTileXf, tileXfToLng, tileYfToLat, toScene } from "./geo";
-import { fetchRetry } from "@/api/retry";
+import { fetchBytes } from "@/api/retry";
 
 export const TERRAIN_Z = 13;
 /** grid segments per terrain tile side (z13 ≈ 3.7 km at New York → ≈ 58 m spacing) */
@@ -40,10 +40,9 @@ export type GroundTileData = {
 };
 
 async function fetchPixels(url: string): Promise<{ data: Uint8ClampedArray; width: number; height: number }> {
-  const res = await fetchRetry(url);
-  if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
+  const buf = await fetchBytes(url);
   // no color management: the RGB values are data, not colors
-  const bmp = await createImageBitmap(await res.blob(), { colorSpaceConversion: "none", premultiplyAlpha: "none" });
+  const bmp = await createImageBitmap(new Blob([buf!], { type: "image/png" }), { colorSpaceConversion: "none", premultiplyAlpha: "none" });
   const canvas = new OffscreenCanvas(bmp.width, bmp.height);
   const ctx = canvas.getContext("2d", { willReadFrequently: true, colorSpace: "srgb" })!;
   ctx.drawImage(bmp, 0, 0);

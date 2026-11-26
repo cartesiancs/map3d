@@ -5,7 +5,7 @@
 // Used on the main thread and in the tile worker.
 
 import { API_URL } from "./auth";
-import { fetchRetry } from "./retry";
+import { fetchBytes } from "./retry";
 
 const DATA_URL = (import.meta.env.VITE_OSM_DATA_URL ?? "https://cdn.map3d.fleet.im").replace(/\/+$/, "");
 export const OVERLAY_URL = (import.meta.env.VITE_OVERLAY_URL ?? (import.meta.env.DEV ? `${API_URL}/overlay` : `${DATA_URL}/overlay`)).replace(/\/+$/, "");
@@ -15,14 +15,14 @@ export type OverlayFeature = { t: "w" | "r"; id: number; tags: Record<string, st
 export type OverlayTile = { hide: number[]; add: OverlayFeature[] };
 
 const EMPTY_INDEX: OverlayIndex = { rev: 0, tiles: {} };
+const decoder = new TextDecoder();
 
 /** The current index (none published yet: no edits), or null when it cannot be read right now. */
 export async function fetchOverlayIndex(): Promise<OverlayIndex | null> {
   try {
-    const res = await fetch(`${OVERLAY_URL}/index.json`, { cache: "no-cache" });
-    if (res.status === 404) return EMPTY_INDEX;
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const j = (await res.json()) as OverlayIndex;
+    const buf = await fetchBytes(`${OVERLAY_URL}/index.json`, { allow404: true, init: { cache: "no-cache" } });
+    if (!buf) return EMPTY_INDEX;
+    const j = JSON.parse(decoder.decode(buf)) as OverlayIndex;
     return { rev: j.rev ?? 0, tiles: j.tiles ?? {} };
   } catch (err) {
     console.warn("overlay index unavailable:", err);
@@ -31,10 +31,9 @@ export async function fetchOverlayIndex(): Promise<OverlayIndex | null> {
 }
 
 export async function fetchOverlayTile(x: number, y: number, rev: number): Promise<OverlayTile> {
-  const res = await fetchRetry(`${OVERLAY_URL}/14/${x}/${y}.json?v=${rev}`);
-  if (res.status === 404) return { hide: [], add: [] };
-  if (!res.ok) throw new Error(`overlay ${x}/${y}: HTTP ${res.status}`);
-  const j = (await res.json()) as OverlayTile;
+  const buf = await fetchBytes(`${OVERLAY_URL}/14/${x}/${y}.json?v=${rev}`, { allow404: true });
+  if (!buf) return { hide: [], add: [] };
+  const j = JSON.parse(decoder.decode(buf)) as OverlayTile;
   return { hide: j.hide ?? [], add: j.add ?? [] };
 }
 
