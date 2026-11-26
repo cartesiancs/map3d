@@ -78,6 +78,9 @@ export type Hit = { tile: Tile; index: number; distance: number };
 
 export type ManagerStats = { tiles: number; buildings: number; loading: number; failed: number; ground: number };
 
+/** what the current view needs (building / road tiles, ground tiles, land / sea maps) and how much of it is drawn */
+export type LoadProgress = { done: number; total: number };
+
 /** a failed load is tried again after 2 s, 4 s, 8 s … up to a minute (network retries happen first, see retry.ts) */
 const RETRY_FIRST_MS = 2000;
 const RETRY_MAX_MS = 60000;
@@ -154,6 +157,9 @@ export class TileManager {
   onStats: (s: ManagerStats) => void = () => {};
   onNamed: (tiles: Tile[]) => void = () => {};
   onCenter: (c: { lat: number; lng: number }) => void = () => {};
+  /** called after a frame in which the progress changed */
+  onProgress: (p: LoadProgress) => void = () => {};
+  private lastProgress = "";
 
   private uploadQueue: Tile[] = [];
   private inFlight = 0;
@@ -354,6 +360,7 @@ export class TileManager {
 
     this.evict();
     this.publish(target, now);
+    this.measureProgress();
     this.scheduleRetries(now);
     // keep frames coming while buildings wait for the overlay index, so they start when the wait ends
     return this.uploadQueue.length > 0 || (!this.overlayTiles && now < this.overlayWaitUntil);
@@ -836,6 +843,38 @@ export class TileManager {
       this.lastCenter.copy(target);
       this.onCenter(fromScene(this.origin, target.x, target.z));
     }
+  }
+
+  /**
+   * Of everything the view needs, how much is on screen: a tile counts once its mesh is in the scene and shown
+   * (with terrain on, once it sits on the ground), a ground tile once its mesh is shown, a land / sea map once
+   * it is known. Loading, waiting for upload, failed (retried later) all count as not yet.
+   * Every frame, not throttled: the last change has to reach the UI, and no frame may follow it.
+   */
+  private measureProgress() {
+    let done = 0;
+    let total = 0;
+    const shown = (o: THREE.Object3D | undefined) => !!o && o.visible && o.parent === this.group;
+    const layers: Layer[] = this.showRoads ? ["building", "road"] : ["building"];
+    for (const key of this.wanted.keys()) {
+      for (const layer of layers) {
+        total++;
+        if (shown(this.tiles[layer].get(key)?.object)) done++;
+      }
+    }
+    const kind = this.terrain ? "t" : "f";
+    for (const key of this.groundWanted) {
+      total++;
+      if (shown(this.ground.get(`${kind}:${key}`)?.mesh)) done++;
+      if (this.mapOn) {
+        total++;
+        if (this.maps.get(key)?.state === "ready") done++;
+      }
+    }
+    const s = `${done}/${total}`;
+    if (s === this.lastProgress) return;
+    this.lastProgress = s;
+    this.onProgress({ done, total });
   }
 
   /** [wall bottom, roof base] of a building: its lowest and highest ground with terrain on, else 0 */

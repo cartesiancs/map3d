@@ -9,7 +9,8 @@ import { DownloadMap } from "@/components/ui/DownloadMap";
 import { MapContextMenu } from "@/components/ui/MapContextMenu";
 import { HeightEditor } from "@/components/ui/HeightEditor";
 import { ContributionsPanel } from "@/components/ui/ContributionsPanel";
-import { UI, iconSize, spin } from "@/components/ui/styles";
+import { LoadProgress } from "@/components/ui/LoadProgress";
+import { UI, iconSize, mobile, spin } from "@/components/ui/styles";
 import { START_VIEW, useAreaStore } from "@/state/areaStore";
 import { useViewStore } from "@/state/viewStore";
 import { useAuthStore } from "@/state/authStore";
@@ -183,6 +184,7 @@ function App() {
       />
       <StatusPill />
 
+      {/* bottom edge: the loading ring (left, under the settings button) above the credits, which may wrap on phones */}
       <div
         css={css({
           position: "fixed",
@@ -190,15 +192,29 @@ function App() {
           bottom: 6,
           left: 10,
           zIndex: 10,
-          fontSize: 11,
-          lineHeight: 1.4,
-          textAlign: "right",
-          color: UI.icon,
-          textShadow: `0 0 3px ${UI.halo}`,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "flex-start",
+          gap: 10,
           pointerEvents: "none",
+          [mobile]: { gap: 8 },
         })}
       >
-        <Attribution />
+        <div css={css({ marginLeft: UI.sideLeft - 10, [mobile]: { marginLeft: 16 - 10 } })}>
+          <LoadProgress />
+        </div>
+        <div
+          css={css({
+            alignSelf: "stretch",
+            fontSize: 11,
+            lineHeight: 1.4,
+            textAlign: "right",
+            color: UI.icon,
+            textShadow: `0 0 3px ${UI.halo}`,
+          })}
+        >
+          <Attribution />
+        </div>
       </div>
     </div>
   );
