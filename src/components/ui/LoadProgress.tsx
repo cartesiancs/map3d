@@ -7,7 +7,7 @@ import { UI, iconSize } from "./styles";
 /** the size of the round buttons, so it lines up with the settings button above it */
 const SIZE = UI.barHeight;
 const STROKE = 2.5;
-/** ring radius: 2 px of the disc around it, which leaves a 25 px opening ("99%" measures 19 px at 10 px) */
+/** ring radius: 2 px of the disc around it */
 const R = SIZE / 2 - 2 - STROKE / 2;
 const CIRCUMFERENCE = 2 * Math.PI * R;
 /** a load that finishes faster than this never shows the ring (no flash on cached tiles) */
@@ -16,9 +16,9 @@ const SHOW_AFTER_MS = 250;
 const HIDE_AFTER_MS = 600;
 
 /**
- * Google Earth style loading ring (bottom left): how much of what the view needs is drawn, in percent.
- * Shown only while something is missing; floor() so it reads 100 only once everything is on screen, where a
- * check mark replaces the number ("100%" is wider than the opening) until the ring fades.
+ * Google Earth style loading ring (bottom left): the ring fills as what the view needs gets drawn (no number;
+ * the percent is only given to screen readers). Shown only while something is missing; floor() so it is full
+ * only once everything is on screen, where a check mark appears until the ring fades.
  */
 export function LoadProgress() {
   const { done, total } = useAreaStore((s) => s.progress);
@@ -45,7 +45,6 @@ export function LoadProgress() {
         height: SIZE,
         borderRadius: "50%",
         backgroundColor: UI.surface,
-        color: UI.text,
         opacity: shown ? 1 : 0,
         transform: shown ? "scale(1)" : "scale(0.85)",
         transition: "opacity .2s, transform .2s",
@@ -66,28 +65,11 @@ export function LoadProgress() {
           css={css({ transition: "stroke-dashoffset .3s ease-out" })}
         />
       </svg>
-      <span
-        css={css({
-          position: "absolute",
-          inset: 0,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          fontSize: 10,
-          fontWeight: 600,
-          letterSpacing: -0.2,
-          fontVariantNumeric: "tabular-nums",
-        })}
-      >
-        {complete ? (
+      {complete && (
+        <span css={css({ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" })}>
           <Check css={[iconSize(13), css({ color: UI.accent })]} strokeWidth={3} />
-        ) : (
-          <>
-            {pct}
-            <span css={css({ fontSize: 7, fontWeight: 600, marginLeft: 0.5 })}>%</span>
-          </>
-        )}
-      </span>
+        </span>
+      )}
     </div>
   );
 }
