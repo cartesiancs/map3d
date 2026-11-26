@@ -10,7 +10,7 @@ import { MapContextMenu } from "@/components/ui/MapContextMenu";
 import { HeightEditor } from "@/components/ui/HeightEditor";
 import { ContributionsPanel } from "@/components/ui/ContributionsPanel";
 import { UI, iconSize, spin } from "@/components/ui/styles";
-import { useAreaStore } from "@/state/areaStore";
+import { START_VIEW, useAreaStore } from "@/state/areaStore";
 import { useViewStore } from "@/state/viewStore";
 import { useAuthStore } from "@/state/authStore";
 import { useContribStore } from "@/state/contribStore";
@@ -47,7 +47,8 @@ function StatusPill() {
       {loading > 0 ? (
         <>
           <Loader2 css={[iconSize(15), css({ animation: `${spin} 1s linear infinite` })]} />
-          {tileManager.originId === 0 ? "Loading Central Park…" : "Loading…"}
+          {/* the first visit opens on Central Park; later visits open where the last one left off */}
+          {!START_VIEW && tileManager.originId === 0 ? "Loading Central Park…" : "Loading…"}
         </>
       ) : (
         <>
