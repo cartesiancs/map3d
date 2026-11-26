@@ -32,7 +32,7 @@ const { positionals, values: opt } = parseArgs({
     "dry-run": { type: "boolean", default: false },
     "no-check": { type: "boolean", default: false },
     restart: { type: "boolean", default: false },
-    concurrency: { type: "string", default: "64" },
+    concurrency: { type: "string", default: "256" }, // uploads in flight: each one waits ~0.3 s for R2, so latency, not bandwidth, sets the pace
     threads: { type: "string" },
     bbox: { type: "string" },
     samples: { type: "string", default: "40" },

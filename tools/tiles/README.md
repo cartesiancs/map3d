@@ -36,8 +36,9 @@ archive), keeps working from the PMTiles archive. Rolling back is removing `tile
 Reading an archive from the CDN costs about one R2 read per 32 MB (~2,000 for roads). Uploading is the slow
 part: R2 bills 4.50 USD per million writes (the first million each month are free), so a version costs about
 20 USD (buildings) + 67 USD (roads) + 3 USD (water). Each upload costs 0.5–0.8 ms of CPU (request signing, HTTP), so the tool spreads blocks over
-worker threads (`--threads`, default: cores - 1, at most 8); the network upload speed is the other limit
-(28 GB + 37.5 GB).
+worker threads (`--threads`, default: cores - 1, at most 8). From Korea one upload to R2 takes ~0.3 s, so the
+pace is set by how many are in flight (`--concurrency`, default 256): 64 gave 225 tiles/s (5.5 h for buildings).
+If R2 answers with SlowDown / 503 repeatedly, use a lower value.
 
 ## One-time Cloudflare setup
 
