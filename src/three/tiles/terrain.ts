@@ -10,6 +10,7 @@
 
 import { Origin, fromScene, latToTileYf, lngToTileXf, tileXfToLng, tileYfToLat, toScene } from "./geo";
 import { fetchBytes } from "@/api/retry";
+import { decodePng } from "./png";
 
 export const TERRAIN_Z = 13;
 /** grid segments per terrain tile side (z13 ≈ 3.7 km at New York → ≈ 58 m spacing) */
@@ -39,24 +40,18 @@ export type GroundTileData = {
   stats: { minHeight: number; maxHeight: number; fetchMs: number; buildMs: number };
 };
 
-async function fetchPixels(url: string): Promise<{ data: Uint8ClampedArray; width: number; height: number }> {
-  const buf = await fetchBytes(url);
-  // no color management: the RGB values are data, not colors
-  const bmp = await createImageBitmap(new Blob([buf!], { type: "image/png" }), { colorSpaceConversion: "none", premultiplyAlpha: "none" });
-  const canvas = new OffscreenCanvas(bmp.width, bmp.height);
-  const ctx = canvas.getContext("2d", { willReadFrequently: true, colorSpace: "srgb" })!;
-  ctx.drawImage(bmp, 0, 0);
-  const { data } = ctx.getImageData(0, 0, bmp.width, bmp.height, { colorSpace: "srgb" });
-  bmp.close();
-  return { data, width: canvas.width, height: canvas.height };
-}
-
-/** Terrarium tile → elevation (meters) per pixel */
+/**
+ * Terrarium tile → elevation (meters) per pixel. The PNG is decoded from its bytes (png.ts), never through a
+ * canvas: a canvas read may not return the stored values, and R carries 256 m per step.
+ */
 export async function fetchElevation(x: number, y: number) {
-  const { data, width, height } = await fetchPixels(ELEVATION_URL(TERRAIN_Z, x, y));
+  const { data, width, height, channels } = await decodePng((await fetchBytes(ELEVATION_URL(TERRAIN_Z, x, y)))!);
   if (width !== PX || height !== PX) throw new Error(`terrarium ${x}/${y}: ${width}×${height}`);
   const elev = new Float32Array(PX * PX);
-  for (let i = 0; i < elev.length; i++) elev[i] = data[4 * i] * 256 + data[4 * i + 1] + data[4 * i + 2] / 256 - 32768;
+  for (let i = 0; i < elev.length; i++) {
+    const p = channels * i;
+    elev[i] = data[p] * 256 + data[p + 1] + data[p + 2] / 256 - 32768;
+  }
   return elev;
 }
 
