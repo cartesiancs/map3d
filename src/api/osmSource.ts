@@ -14,6 +14,7 @@ import { StallError, fetchBytes, isTransient, withRetry } from "./retry";
 import { FileTileSource, TileSource, usableTileSet } from "./tileFiles";
 import { OverlayTile, fetchOverlayTile, overlayIndexCached } from "./overlay";
 import { ArchiveRpc, CachingSource, IN_WORKER, RemoteCache, RpcReply, callMain } from "./pmtilesShared";
+import { EncodedMesh, MeshData, decodeMesh } from "@/contrib/mesh";
 
 const DATA_URL = (import.meta.env.VITE_OSM_DATA_URL ?? "https://cdn.map3d.fleet.im").replace(/\/+$/, "");
 const ZOOM = 14;
@@ -28,8 +29,10 @@ export type OsmFeature = {
   type: "way" | "relation";
   id: number;
   tags: Record<string, string>;
-  /** way: [[line]]; relation: polygons -> rings (ring 0 outer, then holes) */
+  /** way: [[line]]; relation: polygons -> rings (ring 0 outer, then holes). A mesh building: its outline. */
   parts: Ring[][];
+  /** a free 3D shape from an approved map3d edit (src/contrib/mesh.ts) */
+  mesh?: MeshData;
 };
 type Layer = "buildings" | "roads" | "water";
 /** tile zoom of each layer (water: WATER_Z in three/tiles/water.ts) */
@@ -37,7 +40,7 @@ const LAYER_ZOOM: Record<Layer, number> = { buildings: ZOOM, roads: ZOOM, water:
 /** `water`: sea polygons as z10 tiles (optional: older manifests have none).
  *  `tiles`: layers also published as one object per tile (tools/tiles), used when they match the archive. */
 type Manifest = { version: string; buildings: string; roads: string; osmTimestamp: string; water?: string; tiles?: Partial<Record<Layer, unknown>> };
-type TileFeature = { t: "w" | "r"; id: number; tags: Record<string, string>; g: number[][][] };
+type TileFeature = { t: "w" | "r"; id: number; tags: Record<string, string>; g: number[][][]; m?: EncodedMesh };
 
 /** a range read is small (one tile or directory); past this it has stalled */
 const RANGE_TIMEOUT_MS = 45_000;
@@ -263,7 +266,12 @@ async function queryArchive(archive: TileSource, bbox: BBox, overlay: OverlayTil
     const key = feat.t + feat.id;
     if (seen.has(key)) continue;
     const parts = feat.g.map((part) => part.map(decodeRing));
-    seen.set(key, partsIntersectBBox(parts, bbox) ? { type: feat.t === "w" ? "way" : "relation", id: feat.id, tags: feat.tags, parts } : null);
+    seen.set(
+      key,
+      partsIntersectBBox(parts, bbox)
+        ? { type: feat.t === "w" ? "way" : "relation", id: feat.id, tags: feat.tags, parts, ...(feat.m ? { mesh: decodeMesh(feat.m) } : {}) }
+        : null,
+    );
   }
 
   // Overpass order: ways before relations, each by ascending id

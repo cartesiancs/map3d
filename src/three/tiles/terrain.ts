@@ -255,30 +255,39 @@ export async function sampler(o: Origin, xz: Float64Array | Float32Array | numbe
 }
 
 /**
- * Buildings on slopes: the walls start at the LOWEST ground under the footprint corners (no corner floats)
- * and the roof is `height` above the HIGHEST ground (no building disappears into a hillside); the downhill
- * walls are taller, like a foundation. Returned as `bases` [low, high] per building and per vertex
- * (bottom ring = low, top ring = high) for the aBase attribute.
+ * Buildings on slopes: the walls start at the LOWEST ground under the building's ground vertices (no corner
+ * floats) and everything above is lifted to the HIGHEST (no building disappears into a hillside); the
+ * downhill walls are taller, like a foundation. Ground vertices are the bottom ring of an extruded footprint,
+ * or the vertices of a mesh that stand on its ground (`vertexClass` 0, see geo.ts groundClass). Returned as
+ * `bases` [low, high] per building and per vertex (class 0 = low, class 1 = high) for the aBase attribute.
  */
-export async function computeBuildingBases(positions: Float32Array, ranges: Uint32Array, o: Origin) {
+export async function computeBuildingBases(positions: Float32Array, ranges: Uint32Array, vertexClass: Uint8Array, o: Origin) {
   const at = await sampler(o, positions, 3);
   const count = ranges.length / 4;
   const bases = new Float32Array(count * 2);
   const vertexBase = new Float32Array(positions.length / 3);
   for (let b = 0; b < count; b++) {
     const v0 = ranges[4 * b];
-    const n = ranges[4 * b + 1] / 2; // bottom ring v0..v0+n, top ring v0+n..v0+2n
+    const v1 = v0 + ranges[4 * b + 1];
     let low = Infinity;
     let high = -Infinity;
-    for (let v = v0; v < v0 + n; v++) {
+    for (let v = v0; v < v1; v++) {
+      if (vertexClass[v] !== 0) continue;
       const h = at(positions[v * 3], positions[v * 3 + 2]);
       low = Math.min(low, h);
       high = Math.max(high, h);
     }
+    if (low === Infinity) {
+      // nothing on the ground (should not happen): sample every vertex
+      for (let v = v0; v < v1; v++) {
+        const h = at(positions[v * 3], positions[v * 3 + 2]);
+        low = Math.min(low, h);
+        high = Math.max(high, h);
+      }
+    }
     bases[2 * b] = low;
     bases[2 * b + 1] = high;
-    vertexBase.fill(low, v0, v0 + n);
-    vertexBase.fill(high, v0 + n, v0 + 2 * n);
+    for (let v = v0; v < v1; v++) vertexBase[v] = vertexClass[v] === 0 ? low : high;
   }
   return { bases, vertexBase };
 }

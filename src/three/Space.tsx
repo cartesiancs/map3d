@@ -10,7 +10,12 @@ import { LEVELS } from "./tiles/levels";
 import { SCENE_COLORS, TileManager } from "./tiles/TileManager";
 import { useThemeStore } from "@/state/theme";
 import { fromScene, makeOrigin, toScene } from "./tiles/geo";
-import { fetchOverlayIndex } from "@/api/overlay";
+import { fetchOverlayIndex, primeOverlayIndex } from "@/api/overlay";
+import { ReviewOverlay } from "./edit/ReviewOverlay";
+import { EditLayer } from "./edit/EditLayer";
+import { Gizmo } from "./edit/Gizmo";
+import { EditInput } from "./edit/EditInput";
+import { useEditStore } from "@/state/editStore";
 
 
 /** One manager for the whole session: tile meshes survive a Canvas remount (antialias change). */
@@ -34,6 +39,12 @@ tileManager.onReplaced = (keys) => {
   if (view.selected && keys.includes(view.selected.key)) view.select(null);
 };
 
+/** changesets drawn over the map while they are reviewed (review queue, My contributions) */
+export const reviewOverlay = new ReviewOverlay(tileManager);
+/** Edit mode: the buildings being edited, and the transform handles */
+export const editLayer = new EditLayer(tileManager);
+export const gizmo = new Gizmo();
+
 /** approved edits: poll the overlay index (changed tiles reload) */
 const OVERLAY_POLL_MS = 120_000;
 let overlayRev = -1;
@@ -51,6 +62,7 @@ export async function refreshOverlay() {
     if (index.rev !== overlayRev) {
       overlayRev = index.rev;
       tileManager.setOverlay(index.tiles);
+      primeOverlayIndex(index);
     }
   } finally {
     overlayFetching = false;
@@ -93,8 +105,9 @@ type Controls = THREE.EventDispatcher<{ start: object; change: object }> & {
 let cameraAnimating = false;
 /** past this distance from the origin (≈ 44 km) the scene is rebuilt around the camera target */
 const REBASE_DISTANCE = 20000;
-/** the camera never goes lower than this above the ground (scene units) */
+/** the camera never goes lower than this above the ground (scene units); Edit mode lets it come closer */
 const CAMERA_CLEARANCE = 12;
+const EDIT_CLEARANCE = 2;
 
 function TileLayer() {
   const { scene, gl, invalidate } = useThree();
@@ -163,10 +176,11 @@ function TileLayer() {
 
     if (tileManager.update(camera, target, state.scene, performance.now())) invalidate();
 
-    // the orbit target rests on the ground, and the camera stays above it
+    // the orbit target rests on the ground (in Edit mode it may stay on what was framed, as in Blender), and the
+    // camera stays above the ground
     if (controls && !cameraAnimating) {
       let moved = false;
-      const gh = tileManager.groundHeightAt(target.x, target.z);
+      const gh = useEditStore.getState().active ? null : tileManager.groundHeightAt(target.x, target.z);
       if (gh !== null && Math.abs(gh - target.y) > 0.05) {
         const step = (gh - target.y) * 0.25;
         target.y += step;
@@ -174,8 +188,9 @@ function TileLayer() {
         moved = true;
       }
       const ch = tileManager.groundHeightAt(camera.position.x, camera.position.z);
-      if (ch !== null && camera.position.y < ch + CAMERA_CLEARANCE) {
-        camera.position.y = ch + CAMERA_CLEARANCE;
+      const clearance = useEditStore.getState().active ? EDIT_CLEARANCE : CAMERA_CLEARANCE;
+      if (ch !== null && camera.position.y < ch + clearance) {
+        camera.position.y = ch + clearance;
         moved = true;
       }
       if (moved) {
@@ -186,6 +201,24 @@ function TileLayer() {
   });
 
   return <primitive object={tileManager.group} />;
+}
+
+/** layers drawn next to the tiles (never inside tileManager.group: a rebase empties that) */
+function OverlayLayers() {
+  const invalidate = useThree((s) => s.invalidate);
+  // the view renders on demand: every change of the edit session needs a frame
+  useEffect(() => useEditStore.subscribe(() => invalidate()), [invalidate]);
+  useFrame(() => {
+    reviewOverlay.update();
+    editLayer.update(useEditStore.getState());
+  });
+  return (
+    <>
+      <primitive object={reviewOverlay.group} />
+      <primitive object={editLayer.group} />
+      <primitive object={gizmo.group} />
+    </>
+  );
 }
 
 /**
@@ -218,7 +251,10 @@ function Picker() {
       el.style.cursor = hit ? "pointer" : "";
     };
 
+    // Edit mode has its own picking (EditInput)
+    const editing = () => useEditStore.getState().active;
     const onDown = (e: PointerEvent) => {
+      if (editing()) return;
       down = { x: e.clientX, y: e.clientY, t: performance.now(), button: e.button, mouse: e.pointerType === "mouse" };
     };
     const openMenu = (clientX: number, clientY: number) => {
@@ -238,7 +274,7 @@ function Picker() {
       openMenu({ kind: "ground", lat, lng, x: p.x, z: p.z, distance }, clientX, clientY);
     };
     const onUp = (e: PointerEvent) => {
-      if (!down) return;
+      if (!down || editing()) return;
       const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
       const elapsed = performance.now() - down.t;
       const { button, mouse } = down;
@@ -261,6 +297,10 @@ function Picker() {
     // hover: mouse only, not while a button is held (dragging), throttled
     const onMove = (e: PointerEvent) => {
       if (e.pointerType !== "mouse" || e.buttons) return;
+      if (editing()) {
+        if (tileManager.setHover(null)) invalidate();
+        return;
+      }
       const now = performance.now();
       if (now - lastMove < 50) {
         if (pending === null) {
@@ -313,6 +353,8 @@ function CameraRig() {
   const zoomRequest = useViewStore((s) => s.zoomRequest);
   const focusRequest = useViewStore((s) => s.focusRequest);
   const flyRequest = useViewStore((s) => s.flyRequest);
+  const viewRequest = useViewStore((s) => s.viewRequest);
+  const frameRequest = useViewStore((s) => s.frameRequest);
   const select = useViewStore((s) => s.select);
   const goal = useRef<{ position: THREE.Vector3; target: THREE.Vector3 } | null>(null);
 
@@ -389,6 +431,30 @@ function CameraRig() {
     go(position, target);
   }, [flyRequest]);
 
+  // Edit mode views (numpad): the same target and distance, seen from one side
+  useEffect(() => {
+    if (!viewRequest.seq || !controls) return;
+    const target = goal.current?.target ?? controls.target.clone();
+    const d = (goal.current?.position ?? camera.position).distanceTo(target);
+    // never quite level with the ground nor straight down (the controls' limits)
+    const dirs: Record<string, THREE.Vector3> = {
+      top: new THREE.Vector3(0, 1, 0.001),
+      bottom: new THREE.Vector3(0, 1, 0.001),
+      front: new THREE.Vector3(0, 0.02, 1),
+      back: new THREE.Vector3(0, 0.02, -1),
+      right: new THREE.Vector3(1, 0.02, 0),
+      left: new THREE.Vector3(-1, 0.02, 0),
+    };
+    go(target.clone().add(dirs[viewRequest.direction].normalize().multiplyScalar(d)), target);
+  }, [viewRequest]);
+
+  useEffect(() => {
+    if (!frameRequest.seq || !controls) return;
+    const center = new THREE.Vector3(frameRequest.x, frameRequest.y, frameRequest.z);
+    const dir = (goal.current?.position ?? camera.position).clone().sub(goal.current?.target ?? controls.target).normalize();
+    go(center.clone().addScaledVector(dir, Math.max(frameRequest.radius * 2.6, 25)), center);
+  }, [frameRequest]);
+
   useFrame(() => {
     const g = goal.current;
     if (g) {
@@ -412,13 +478,14 @@ function CameraRig() {
 function DevHook() {
   const get = useThree((s) => s.get);
   useEffect(() => {
-    if (import.meta.env.DEV) Object.assign(window as any, { __r3f: { get }, __tiles: tileManager, __areaStore: useAreaStore, __viewStore: useViewStore, __goToPlace: goToPlace });
+    if (import.meta.env.DEV) Object.assign(window as any, { __r3f: { get }, __tiles: tileManager, __areaStore: useAreaStore, __viewStore: useViewStore, __goToPlace: goToPlace, __editStore: useEditStore, __editLayer: editLayer, __reviewOverlay: reviewOverlay });
   }, [get]);
   return null;
 }
 
 export function Space() {
   const level = useViewStore((s) => s.level);
+  const editing = useEditStore((s) => s.active);
   const dark = useThemeStore((s) => s.dark);
   const background = SCENE_COLORS[dark ? "dark" : "light"].background;
   // a night scene: dimmer lights, so dark materials stay dark under the bright city environment
@@ -453,12 +520,14 @@ export function Space() {
         enableDamping
         dampingFactor={0.12}
         screenSpacePanning={false}
-        maxPolarAngle={1.35}
-        minDistance={20}
+        maxPolarAngle={editing ? Math.PI / 2 - 0.01 : 1.35}
+        minDistance={editing ? 3 : 20}
         maxDistance={cfg.maxDistance}
       />
       <TileLayer />
+      <OverlayLayers />
       <Picker />
+      <EditInput />
       <CameraRig />
       <DevHook />
       {cfg.pbr && <Environment preset="city" environmentIntensity={light} />}

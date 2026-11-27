@@ -20,7 +20,7 @@ export type WorkerJob =
   | { kind: "tile"; req: TileRequest }
   | { kind: "ground"; x: number; y: number; origin: Origin; flat: boolean }
   | { kind: "water"; x: number; y: number }
-  | { kind: "bases"; positions: Float32Array; ranges: Uint32Array; origin: Origin }
+  | { kind: "bases"; positions: Float32Array; ranges: Uint32Array; vertexClass: Uint8Array; origin: Origin }
   | { kind: "roadHeights"; positions: Float32Array; origin: Origin };
 
 export type BasesResult = { bases: Float32Array; vertexBase: Float32Array };
@@ -57,7 +57,7 @@ export async function loadTile(req: TileRequest): Promise<TileData> {
   if (req.terrain) {
     const t2 = performance.now();
     if (data.layer === "building") {
-      const r = await computeBuildingBases(data.positions, data.ranges, req.origin);
+      const r = await computeBuildingBases(data.positions, data.ranges, data.vertexClass, req.origin);
       data.terrain = { ...r, ms: performance.now() - t2 };
     } else {
       const r = await computeRoadHeights(data.positions, req.origin);
@@ -76,7 +76,7 @@ export function handle(job: WorkerJob): Promise<JobResult> {
     case "water":
       return loadWaterSdf(job.x, job.y);
     case "bases":
-      return computeBuildingBases(job.positions, job.ranges, job.origin);
+      return computeBuildingBases(job.positions, job.ranges, job.vertexClass, job.origin);
     case "roadHeights":
       return computeRoadHeights(job.positions, job.origin);
   }

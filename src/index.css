@@ -34,6 +34,10 @@
   --m3-warn: #b45309;
   --m3-pending-bg: #fef3c7;
   --m3-pending-fg: #92400e;
+  /* Edit mode: the Contribute button */
+  --m3-contribute: #facc15;
+  --m3-contribute-hover: #eab308;
+  --m3-contribute-fg: #1c1917;
 }
 
 :root[data-theme="dark"] {
@@ -68,6 +72,9 @@
   --m3-warn: #fbbf24;
   --m3-pending-bg: #42300a;
   --m3-pending-fg: #fcd34d;
+  --m3-contribute: #facc15;
+  --m3-contribute-hover: #fde047;
+  --m3-contribute-fg: #1c1917;
 }
 
 html,

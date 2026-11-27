@@ -1,12 +1,11 @@
 import { css } from "@emotion/react";
 import { useViewStore } from "@/state/viewStore";
-import { Ruler } from "lucide-react";
+import { Pencil } from "lucide-react";
 import { UI, iconSize, mobile, panel, pillButton } from "./styles";
-import { pendingFor, useContribStore } from "@/state/contribStore";
+import { useContribStore } from "@/state/contribStore";
+import { useEditStore } from "@/state/editStore";
 import { useAuthStore } from "@/state/authStore";
-import { describeProposal, refOf } from "@/api/contributions";
-import { tileManager } from "@/three/Space";
-import { fromScene } from "@/three/tiles/geo";
+import { describeChangeset, pendingFor, refOf } from "@/api/changesets";
 import { useLastValue, useSwipeDown } from "./usePanel";
 import { englishName, isEnglishText, isForeignNameKey } from "@/utils/english";
 
@@ -60,8 +59,8 @@ export function BuildingPanel() {
   // while the panel fades out it keeps showing the building it showed
   const selected = useLastValue(current);
   const select = useViewStore((s) => s.select);
-  // Set height… takes the same place while open
-  const editing = useContribStore((s) => s.heightEdit !== null);
+  // Edit mode's panel takes the same place
+  const editing = useEditStore((s) => s.active);
   const mine = useContribStore((s) => s.mine);
   const signedIn = useAuthStore((s) => s.status === "signedIn");
   const open = !!current && !editing;
@@ -83,6 +82,8 @@ export function BuildingPanel() {
       ref={swipe.ref}
       aria-label="Building information"
       aria-hidden={!open}
+      // hidden: nothing in it can take the focus (Enter would press its buttons)
+      inert={!open}
       css={[
         panel,
         css({
@@ -166,19 +167,15 @@ export function BuildingPanel() {
           </details>
         )}
         {pending && (
-          <p css={css({ margin: "20px 0 0", fontSize: 13, color: UI.pendingFg })}>Your proposal ({describeProposal(pending)}) is waiting for review.</p>
+          <p css={css({ margin: "20px 0 0", fontSize: 13, color: UI.pendingFg })}>Your proposal ({describeChangeset(pending)}) is waiting for review.</p>
         )}
         {signedIn && selected && (
           <button
-            onClick={() => {
-              const info = tileManager.describe(selected.key, selected.index);
-              if (!info) return;
-              const ll = fromScene(tileManager.origin, info.center.x, info.center.z);
-              useContribStore.getState().startHeightEdit({ ...selected, lat: ll.lat, lng: ll.lng, height: info.height });
-            }}
+            onClick={() => void useEditStore.getState().enter(selected.id)}
+            title="Change its shape, height or place, or remove it (with other buildings, in Edit mode)"
             css={[pillButton, css({ marginTop: 18, padding: "0 14px", fontSize: 14, fontWeight: 600, color: UI.text, backgroundColor: UI.control, gap: 6, [mobile]: { display: "none" } })]}
           >
-            <Ruler css={iconSize(15)} /> {pending ? "Edit my proposal" : "Set height…"}
+            <Pencil css={iconSize(15)} /> {pending ? "Edit my proposal" : "Edit"}
           </button>
         )}
         <p css={css({ margin: "24px 0 0", fontSize: 12, color: UI.placeholder })}>{source(selected?.id, tags)}</p>

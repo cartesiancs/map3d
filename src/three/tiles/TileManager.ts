@@ -18,9 +18,16 @@ export const LAND_COLOR = "#eceef1";
 export const SEA_COLOR = "#9cc2e8";
 /** the scene in each theme (exports always use the light colors above) */
 export const SCENE_COLORS = {
-  light: { background: "#f6f7f8", building: BUILDING_COLOR, hover: HOVER_COLOR, selected: SELECTED_COLOR, ground: GROUND_COLOR, land: LAND_COLOR, sea: SEA_COLOR, light: 1 },
+  // edit*: Edit mode (edges and vertices, the selected ones); review*: a changeset drawn for review
+  light: {
+    background: "#f6f7f8", building: BUILDING_COLOR, hover: HOVER_COLOR, selected: SELECTED_COLOR, ground: GROUND_COLOR, land: LAND_COLOR, sea: SEA_COLOR, light: 1,
+    editEdge: "#1f2937", editSelected: "#f97316", review: "#ef4444", reviewGhostEdge: "#64748b",
+  },
   // with the lights at `light` × their day intensity (Space.tsx)
-  dark: { background: "#1a1b1e", building: "#8a8f98", hover: "#6a9cf5", selected: "#3d83f7", ground: "#3a3c42", land: "#3a3c42", sea: "#253447", light: 0.45 },
+  dark: {
+    background: "#1a1b1e", building: "#8a8f98", hover: "#6a9cf5", selected: "#3d83f7", ground: "#3a3c42", land: "#3a3c42", sea: "#253447", light: 0.45,
+    editEdge: "#e5e7eb", editSelected: "#fb923c", review: "#f87171", reviewGhostEdge: "#94a3b8",
+  },
 };
 export type SceneColors = (typeof SCENE_COLORS)["light"];
 
@@ -49,6 +56,10 @@ export type Tile = {
   vertexBase?: Float32Array;
   terrainState?: "pending" | "ready" | "error";
   terrainFailedAt?: number;
+  /** buildings: feature id -> index (built on first use) */
+  idIndex?: Map<number, number>;
+  /** masked buildings (see setMasked): their original triangle indices, by building index */
+  maskSaved?: Map<number, Uint16Array | Uint32Array>;
 };
 
 type GroundTile = {
@@ -188,8 +199,9 @@ export class TileManager {
   colors: SceneColors = SCENE_COLORS.light;
   private hover: { mesh: THREE.Mesh; tile: Tile; index: number } | null = null;
   private selected: { mesh: THREE.Mesh; key: string; index: number } | null = null;
-  /** building shown at a proposed height: its original roof heights, to put back */
-  private preview: { tile: Tile; index: number; roof: Float32Array; height: number } | null = null;
+  /** buildings drawn by another layer (edit mode, review): not drawn in their tile, not pickable */
+  private masked = new Set<number>();
+  private maskOwners = new Map<string, Set<number>>();
   private frustum = new THREE.Frustum();
   private projScreen = new THREE.Matrix4();
   private box = new THREE.Box3();
@@ -525,6 +537,7 @@ export class TileManager {
         tile.data = data;
         tile.state = "ready";
         tile.object = this.makeObject(tile);
+        if (layer === "building") this.applyMask(tile);
         // placed on the ground in the same worker job (terrain was on when it was requested)
         if (data.terrain) this.applyTerrain(tile, data.terrain as BasesResult | RoadHeightsResult);
         this.uploadQueue.push(tile);
@@ -605,7 +618,7 @@ export class TileManager {
     this.terrainJobs++;
     const job =
       d.layer === "building"
-        ? tileClient.run<BasesResult>({ kind: "bases", positions: d.positions, ranges: d.ranges, origin: this.origin }, route)
+        ? tileClient.run<BasesResult>({ kind: "bases", positions: d.positions, ranges: d.ranges, vertexClass: d.vertexClass, origin: this.origin }, route)
         : tileClient.run<RoadHeightsResult>({ kind: "roadHeights", positions: d.positions, origin: this.origin }, route);
     job
       .then((r) => {
@@ -892,6 +905,7 @@ export class TileManager {
       const d = tile.data as BuildingTileData;
       const b = d.bounds;
       for (let i = 0; i < d.ids.length; i++) {
+        if (tile.maskSaved?.has(i)) continue;
         const [low, high] = this.baseOf(tile, i);
         const y0 = low;
         const y1 = high + b[5 * i + 4];
@@ -1001,49 +1015,66 @@ export class TileManager {
   }
 
   /**
-   * Show one building at another height until cleared (Set height…, review queue): rewrites the roof ring of
-   * that building in its tile, and puts it back on clear. `height` uses the building height units.
+   * Buildings (feature ids: OSM way id, or negative for buildings added on map3d) that another layer draws
+   * instead (edit mode, review preview): left out of their tile's drawing and picking until unmasked. Kept by
+   * id, so it holds across tile reloads (new edits), renumbering and rebases. Each `owner` (layer) has its own
+   * set; a building is masked while any owner masks it.
    */
-  previewHeight(ref: { key: string; index: number } | null, height: number | null) {
-    const p = this.preview;
-    if (p && this.tiles.building.get(p.tile.key) === p.tile) this.setRoof(p.tile, p.index, p.roof, p.height);
-    this.preview = null;
-    if (ref && height != null) {
-      const tile = this.tiles.building.get(ref.key);
-      if (tile?.state === "ready" && tile.object) {
-        const d = tile.data as BuildingTileData;
-        const [v0, vc] = d.ranges.subarray(4 * ref.index, 4 * ref.index + 2);
-        const n = vc / 2;
-        const roof = new Float32Array(n);
-        for (let k = 0; k < n; k++) roof[k] = d.positions[(v0 + n + k) * 3 + 1];
-        this.preview = { tile, index: ref.index, roof, height: d.bounds[5 * ref.index + 4] };
-        this.setRoof(tile, ref.index, roof.map(() => height), height);
-      }
-    }
+  setMasked(ids: Iterable<number>, owner = "default") {
+    this.maskOwners.set(owner, new Set(ids));
+    const next = new Set<number>();
+    for (const set of this.maskOwners.values()) for (const id of set) next.add(id);
+    if (next.size === this.masked.size && [...next].every((id) => this.masked.has(id))) return;
+    this.masked = next;
+    for (const t of this.tiles.building.values()) if (t.state === "ready" && t.object) this.applyMask(t);
+    if (this.hover && this.hover.tile.maskSaved?.has(this.hover.index)) this.setHover(null);
+    if (this.selected && this.tiles.building.get(this.selected.key)?.maskSaved?.has(this.selected.index)) this.setSelected(null);
     this.onChange();
   }
 
-  private setRoof(tile: Tile, index: number, roof: Float32Array, height: number) {
-    const d = tile.data as BuildingTileData;
-    const [v0, vc] = d.ranges.subarray(4 * index, 4 * index + 2);
-    const n = vc / 2;
-    for (let k = 0; k < n; k++) d.positions[(v0 + n + k) * 3 + 1] = roof[k];
-    d.bounds[5 * index + 4] = height;
-    const mesh = tile.object as THREE.Mesh;
-    const attr = mesh.geometry.getAttribute("position") as THREE.BufferAttribute;
-    attr.clearUpdateRanges();
-    attr.addUpdateRange((v0 + n) * 3, n * 3);
-    attr.needsUpdate = true;
-    tile.box = this.buildingBox(d, this.terrain ? (tile.bases ?? null) : null);
-    mesh.geometry.boundingBox = tile.box.clone();
-    mesh.geometry.boundingSphere = tile.box.getBoundingSphere(new THREE.Sphere());
-    // the highlight meshes are copies of the old shape
-    if (this.hover?.tile === tile && this.hover.index === index) this.setHover(null);
-    if (this.selected?.key === tile.key && this.selected.index === index) {
-      const sel = { key: this.selected.key, index };
-      this.setSelected(null);
-      this.setSelected(sel);
+  isMasked(id: number) {
+    return this.masked.has(id);
+  }
+
+  /** a masked building's triangles all collapse onto its first vertex (nothing drawn, no ray hits) */
+  private applyMask(t: Tile) {
+    const d = t.data as BuildingTileData;
+    const want = new Set<number>();
+    if (this.masked.size) {
+      if (!t.idIndex) {
+        t.idIndex = new Map();
+        for (let i = 0; i < d.ids.length; i++) t.idIndex.set(d.ids[i], i);
+      }
+      for (const id of this.masked) {
+        const i = t.idIndex.get(id);
+        if (i !== undefined) want.add(i);
+      }
     }
+    const saved = t.maskSaved;
+    if (!want.size && !saved?.size) return;
+    const attr = (t.object as THREE.Mesh).geometry.getIndex()!;
+    const index = attr.array as Uint16Array | Uint32Array; // the same array as d.index
+    attr.clearUpdateRanges();
+    let changed = false;
+    if (saved) {
+      for (const [i, orig] of saved) {
+        if (want.has(i)) continue;
+        index.set(orig, d.ranges[4 * i + 2]);
+        attr.addUpdateRange(d.ranges[4 * i + 2], orig.length);
+        saved.delete(i);
+        changed = true;
+      }
+    }
+    for (const i of want) {
+      if (saved?.has(i)) continue;
+      const start = d.ranges[4 * i + 2];
+      const count = d.ranges[4 * i + 3];
+      (t.maskSaved ??= new Map()).set(i, index.slice(start, start + count));
+      index.fill(d.ranges[4 * i], start, start + count);
+      attr.addUpdateRange(start, count);
+      changed = true;
+    }
+    if (changed) attr.needsUpdate = true;
   }
 
   /** Where a ray meets the ground (terrain relief when on, else y = 0); null above the horizon. */

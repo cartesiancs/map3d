@@ -24,7 +24,8 @@ The map files are based on OpenStreetMap data.
 - [x] Create Roads
 - [x] Export GLB
 - [ ] Building Texture
-- [ ] Height Customization
+- [x] Height Customization
+- [x] Edit mode: reshape buildings in 3D (Blender-style tools), move, remove or add them, reviewed before they go live
 - [ ] Material
 - [ ] Heightmap
 

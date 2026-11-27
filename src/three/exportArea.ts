@@ -1,5 +1,5 @@
 // GLB export of a selected area, independent of what is streamed into the view, following the settings:
-// - buildings: one extruded mesh each (as before)
+// - buildings: one extruded mesh each (as before); buildings edited into a free 3D shape as that shape
 // - roads: only when Roads is on
 // - terrain on: the terrain mesh of the area, and buildings / roads placed on it exactly as in the 3D view
 //   (walls from the lowest ground under the footprint, roof `height` above the highest; roads split along
@@ -8,7 +8,8 @@
 import * as THREE from "three";
 import { GLTFExporter } from "three/examples/jsm/Addons.js";
 import { BBox, fetchBuildings, fetchRoads, wayGeometry } from "@/api/osmSource";
-import { buildingHeight, latToTileYf, lngToTileXf, makeOrigin, tileXfToLng, tileYfToLat, toScene } from "./tiles/geo";
+import { buildingHeight, latToTileYf, lngToTileXf, makeOrigin, meshFrame, tileXfToLng, tileYfToLat, toScene } from "./tiles/geo";
+import { meshToScene, triangulateMesh } from "./meshGeometry";
 import { GRID, TERRAIN_Z, computeRoadHeights, getGrid, sampler } from "./tiles/terrain";
 import { BUILDING_COLOR, GROUND_COLOR, ROAD_COLOR } from "./tiles/TileManager";
 
@@ -72,13 +73,18 @@ export async function exportAreaGLB(bbox: BBox, options: ExportOptions, fileName
 
   // footprints in scene coordinates (x, z); the shape plane is (x, north) with north = −z
   const footprints: { id: number; tags: Record<string, string>; xz: [number, number][] }[] = [];
+  const meshes: { id: number; scene: ReturnType<typeof meshToScene>; triangles: number[] }[] = [];
   for (const f of buildings) {
+    if (f.mesh) {
+      meshes.push({ id: f.id, scene: meshToScene(f.mesh, meshFrame(o, f.mesh.anchor[1], f.mesh.anchor[0])), triangles: triangulateMesh(f.mesh) });
+      continue;
+    }
     const g = wayGeometry(f);
     if (!g || g.length < 3) continue;
     footprints.push({ id: f.id, tags: f.tags, xz: g.map((p) => toScene(o, p.lat, p.lon)) });
   }
   const ground = options.terrain
-    ? await sampler(o, footprints.flatMap((f) => f.xz.flatMap(([x, z]) => [x, 0, z])), 3)
+    ? await sampler(o, [...footprints.flatMap((f) => f.xz.flatMap(([x, z]) => [x, 0, z])), ...meshes.flatMap((m) => [...m.scene.positions])], 3)
     : null;
 
   const material = new THREE.MeshStandardMaterial({ color: BUILDING_COLOR });
@@ -104,6 +110,38 @@ export async function exportAreaGLB(bbox: BBox, options: ExportOptions, fileName
     mesh.rotation.x = -Math.PI / 2;
     // OSM way id ("/" is rewritten by several glTF loaders); buildings added on map3d have negative ids
     mesh.name = f.id < 0 ? `map3d_new_${-f.id}` : `way_${f.id}`;
+    root.add(mesh);
+  }
+
+  // free 3D shapes: on terrain, the vertices on their ground go down to the lowest ground under them and the
+  // rest is lifted to the highest, as in the view (computeBuildingBases)
+  for (const m of meshes) {
+    const { positions: p, classes } = m.scene;
+    let low = 0;
+    let high = 0;
+    if (ground) {
+      low = Infinity;
+      high = -Infinity;
+      for (let v = 0; v < classes.length; v++) {
+        if (classes[v] !== 0) continue;
+        const h = ground(p[3 * v], p[3 * v + 2]);
+        low = Math.min(low, h);
+        high = Math.max(high, h);
+      }
+      if (low === Infinity) low = high = 0;
+    }
+    // one vertex per triangle corner: flat normals, like the view
+    const out = new Float32Array(m.triangles.length * 3);
+    m.triangles.forEach((v, k) => {
+      out[3 * k] = p[3 * v];
+      out[3 * k + 1] = p[3 * v + 1] + (classes[v] === 0 ? low : high);
+      out[3 * k + 2] = p[3 * v + 2];
+    });
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.BufferAttribute(out, 3));
+    geometry.computeVertexNormals();
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.name = m.id < 0 ? `map3d_new_${-m.id}` : `way_${m.id}`;
     root.add(mesh);
   }
 

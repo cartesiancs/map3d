@@ -7,12 +7,15 @@
 //   face normals in the fragment shader. That is 2n vertices per building instead of ~5n with normals.
 
 import { ShapeUtils, Vector2 } from "three";
-import { Origin, SCALE, buildingHeight, latToTileY, lngToTileX } from "./geo";
+import { Origin, SCALE, buildingHeight, latToTileY, lngToTileX, meshFrame } from "./geo";
 import { englishName, isEnglishText } from "@/utils/english";
+import { EncodedMesh, decodeMesh } from "@/contrib/mesh";
+import { meshToScene, triangulateMesh } from "../meshGeometry";
 
 const E7 = 1e7;
 
-export type TileFeature = { t: "w" | "r"; id: number; tags: Record<string, string>; g: number[][][] };
+/** `m`: a free 3D shape from an approved map3d edit (then `g` is its outline: owner tile, apps without meshes) */
+export type TileFeature = { t: "w" | "r"; id: number; tags: Record<string, string>; g: number[][][]; m?: EncodedMesh };
 
 export type BuildingTileData = {
   layer: "building";
@@ -25,6 +28,8 @@ export type BuildingTileData = {
   /** per building: minX, minZ, maxX, maxZ, height (scene units) */
   bounds: Float32Array;
   ids: Float64Array;
+  /** per vertex: 0 on the ground, 1 above it (terrain placement, height preview); see geo.ts groundClass */
+  vertexClass: Uint8Array;
   /** JSON array of tag objects, parsed lazily on the main thread (only when a building is picked) */
   tagsJson: string;
   /** searchable buildings: [building index, label, secondary text] */
@@ -68,6 +73,7 @@ function project(ring: number[], o: Origin) {
 
 export function buildBuildingTile(features: TileFeature[], x: number, y: number, o: Origin): BuildingTileData {
   const pos: number[] = [];
+  const cls: number[] = [];
   const idx: number[] = [];
   const ranges: number[] = [];
   const bounds: number[] = [];
@@ -75,10 +81,39 @@ export function buildBuildingTile(features: TileFeature[], x: number, y: number,
   const tags: Record<string, string>[] = [];
   const names: [number, string, string][] = [];
 
+  /** id, tags and search entry of the building just added */
+  const record = (f: TileFeature) => {
+    const bi = ids.length;
+    ids.push(f.id);
+    tags.push(f.tags);
+    // search shows English only: buildings without an English (Latin-script) name are not listed
+    const label = englishName(f.tags);
+    if (label) {
+      const street = [f.tags["addr:housenumber"], f.tags["addr:street"]].filter(isEnglishText).join(" ");
+      names.push([bi, label, street || (f.tags.building && f.tags.building !== "yes" ? f.tags.building.replace(/_/g, " ") : "")]);
+    }
+  };
+
   for (const f of features) {
     if (f.t !== "w") continue; // the app never drew relation buildings (no way geometry)
     const ring = f.g[0]?.[0];
     if (!ring || ring.length < 8 || !isOwner(ring, x, y)) continue;
+
+    if (f.m) {
+      // a free 3D shape: its own vertices and faces (shared vertices are fine: the material is flat-shaded)
+      const mesh = decodeMesh(f.m);
+      const s = meshToScene(mesh, meshFrame(o, mesh.anchor[1], mesh.anchor[0]));
+      const v0 = pos.length / 3;
+      const i0 = idx.length;
+      for (let k = 0; k < s.positions.length; k++) pos.push(s.positions[k]);
+      for (let k = 0; k < s.classes.length; k++) cls.push(s.classes[k]);
+      for (const t of triangulateMesh(mesh)) idx.push(v0 + t);
+      ranges.push(v0, s.classes.length, i0, idx.length - i0);
+      bounds.push(...s.bounds);
+      record(f);
+      continue;
+    }
+
     const flat = project(ring, o);
     let n = flat.length / 2;
     if (flat[0] === flat[2 * n - 2] && flat[1] === flat[2 * n - 1]) n--;
@@ -111,6 +146,8 @@ export function buildBuildingTile(features: TileFeature[], x: number, y: number,
       if (py[k] > maxY) maxY = py[k];
     }
     for (let k = 0; k < n; k++) pos.push(px[k], h, -py[k]);
+    for (let k = 0; k < n; k++) cls.push(0);
+    for (let k = 0; k < n; k++) cls.push(1);
     for (let k = 0; k < n; k++) {
       const j = (k + 1) % n;
       idx.push(v0 + k, v0 + j, v0 + n + j, v0 + k, v0 + n + j, v0 + n + k);
@@ -123,17 +160,9 @@ export function buildBuildingTile(features: TileFeature[], x: number, y: number,
       else idx.push(v0 + n + a, v0 + n + c, v0 + n + b);
     }
 
-    const bi = ids.length;
     ranges.push(v0, 2 * n, i0, idx.length - i0);
     bounds.push(minX, -maxY, maxX, -minY, h);
-    ids.push(f.id);
-    tags.push(f.tags);
-    // search shows English only: buildings without an English (Latin-script) name are not listed
-    const label = englishName(f.tags);
-    if (label) {
-      const street = [f.tags["addr:housenumber"], f.tags["addr:street"]].filter(isEnglishText).join(" ");
-      names.push([bi, label, street || (f.tags.building && f.tags.building !== "yes" ? f.tags.building.replace(/_/g, " ") : "")]);
-    }
+    record(f);
   }
 
   const vertexCount = pos.length / 3;
@@ -146,6 +175,7 @@ export function buildBuildingTile(features: TileFeature[], x: number, y: number,
     ranges: new Uint32Array(ranges),
     bounds: new Float32Array(bounds),
     ids: new Float64Array(ids),
+    vertexClass: new Uint8Array(cls),
     tagsJson: JSON.stringify(tags),
     names,
     stats: { buildings: ids.length, triangles: idx.length / 3, fetchMs: 0, buildMs: 0, bytes: 0 },
@@ -179,6 +209,6 @@ export function transferables(d: TileData): Transferable[] {
       : [d.terrain.positions.buffer, d.terrain.heights.buffer]
     : [];
   return d.layer === "building"
-    ? [d.positions.buffer, d.index.buffer, d.ranges.buffer, d.bounds.buffer, d.ids.buffer, ...extra]
+    ? [d.positions.buffer, d.index.buffer, d.ranges.buffer, d.bounds.buffer, d.ids.buffer, d.vertexClass.buffer, ...extra]
     : [d.positions.buffer, ...extra];
 }

@@ -35,6 +35,9 @@ export const UI = {
   warn: "var(--m3-warn)",
   pendingBg: "var(--m3-pending-bg)",
   pendingFg: "var(--m3-pending-fg)",
+  contribute: "var(--m3-contribute)",
+  contributeHover: "var(--m3-contribute-hover)",
+  contributeFg: "var(--m3-contribute-fg)",
   barHeight: 34,
   top: 31,
   side: 26,
@@ -85,3 +88,43 @@ export const panel = css({
   color: UI.text,
   boxShadow: `0 8px 30px ${UI.shadow}`,
 });
+
+/** form fields of the side panels */
+export const fieldLabel = css({ display: "block", fontSize: 13, fontWeight: 600, color: UI.icon, marginBottom: 6 });
+export const input = css({
+  width: "100%",
+  boxSizing: "border-box",
+  height: 36,
+  border: `1px solid ${UI.fieldBorder}`,
+  borderRadius: 10,
+  backgroundColor: UI.field,
+  padding: "0 10px",
+  fontSize: 15,
+  [mobile]: { fontSize: 16 }, // no iOS zoom on focus
+  color: UI.text,
+  fontFamily: "inherit",
+  ":focus": { outline: `2px solid ${UI.accent}`, outlineOffset: -1, borderColor: "transparent" },
+});
+
+export const sidePanel = (open: boolean) => [
+  panel,
+  css({
+    position: "fixed",
+    top: 94,
+    right: UI.side,
+    width: 372,
+    maxHeight: "calc(100vh - 178px)",
+    boxSizing: "border-box",
+    borderRadius: 32,
+    padding: "28px 28px 24px",
+    zIndex: 21,
+    display: "flex",
+    flexDirection: "column",
+    overflowY: "auto",
+    transition: "opacity .2s, transform .2s",
+    opacity: open ? 1 : 0,
+    transform: open ? "none" : "translateX(24px)",
+    pointerEvents: open ? "auto" : "none",
+    [mobile]: { display: "none" }, // editing is desktop only
+  }),
+];

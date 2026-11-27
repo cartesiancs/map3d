@@ -56,6 +56,31 @@ export function tileYfToLat(y: number, z: number) {
   return (180 / Math.PI) * Math.atan(Math.sinh(n));
 }
 
+/** meters per degree of latitude (the sphere of src/contrib/validate.ts) */
+export const M_PER_DEG = (Math.PI * 6371008.8) / 180;
+/** meters per HORIZONTAL scene unit (≈ 2.18). Vertical scene units are meters: heights are drawn unscaled. */
+export const H_UNIT_M = M_PER_DEG / SCALE;
+
+/**
+ * Building vertices up to this high (m) stand on the ground. On terrain they go down to the LOWEST ground
+ * under the building, every other vertex is lifted to the HIGHEST (the plinth stretches, the rest keeps
+ * its shape): see computeBuildingBases.
+ */
+export const GROUND_EPS = 0.05;
+/** 0: on the ground, 1: above it (the vertexClass of building tiles) */
+export const groundClass = (y: number) => (y < GROUND_EPS ? 0 : 1);
+
+/**
+ * A building mesh is stored in meters around an anchor: x = east, y = up (0 = its lowest ground), z = south.
+ * In the scene: x_s = ax + x·kx, y_s = y, z_s = az + z·kz (the map's vertical exaggeration is kept).
+ */
+export type MeshFrame = { ax: number; az: number; kx: number; kz: number };
+
+export function meshFrame(o: Origin, anchorLat: number, anchorLng: number): MeshFrame {
+  const [ax, az] = toScene(o, anchorLat, anchorLng);
+  return { ax, az, kx: o.cos / (Math.cos((anchorLat * Math.PI) / 180) * H_UNIT_M), kz: 1 / H_UNIT_M };
+}
+
 /**
  * Height rule kept from the original app: building:levels × 2.2 wins over height, default 10.
  * An approved map3d edit that sets the height (map3d:height) wins over both.

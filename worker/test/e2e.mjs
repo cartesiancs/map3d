@@ -21,7 +21,7 @@ if (mig.status !== 0) { console.error(mig.stdout, mig.stderr); process.exit(1); 
 
 const mock = await startMockGitHub();
 const vars = { GITHUB_WEB_BASE: "http://localhost:8788", GITHUB_API_BASE: "http://localhost:8788", GITHUB_CLIENT_ID: "mock-client", GITHUB_CLIENT_SECRET: "mock-secret", ADMIN_GITHUB_IDS: "1001" };
-const dev = spawn(process.execPath, [WRANGLER, "dev", "--port", "8787", "--persist-to", PERSIST, ...Object.entries(vars).flatMap(([k, v]) => ["--var", `${k}:${v}`])], { cwd: ROOT, env });
+const dev = spawn(process.execPath, [WRANGLER, "dev", "--port", "8787", "--local-upstream", "localhost:8787", "--persist-to", PERSIST, ...Object.entries(vars).flatMap(([k, v]) => ["--var", `${k}:${v}`])], { cwd: ROOT, env });
 let devLog = "";
 dev.stdout.on("data", (d) => (devLog += d));
 dev.stderr.on("data", (d) => (devLog += d));
@@ -154,85 +154,160 @@ try {
   check("admin list shows the remaining override", list.overrides?.length === 1 && list.overrides[0].ref === "new:1");
   check("overlay files are public (CORS *)", (await fetch(`${API}/overlay/index.json`)).headers.get("access-control-allow-origin") === "*");
 
-  // 5c. contributions: submit -> review queue -> approve / reject, conflicts, withdraw, limits
+  // 5c. changesets: several buildings at once -> review queue -> approve all / reject, conflicts, withdraw, limits
   const call = (method, p, session, body, origin = APP) =>
     fetch(`${API}${p}`, { method, headers: { Origin: origin, ...(body ? { "Content-Type": "application/json" } : {}), ...(session ? { Cookie: `map3d_session=${session}` } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
   const callJson = async (...args) => { const r = await call(...args); return { status: r.status, body: await r.json().catch(() => null) }; };
-  const wayBase = { footprint: square(-73.9600, 40.7650), tags: { building: "yes", "building:levels": "2", name: "Corner Shop" } };
-  const heightProposal = { ref: "way:777", base: wayBase, proposal: { height: 120 }, comment: "Height from the city survey, roof is at 120 m." };
-  check("contribution: no session -> 401", (await call("POST", "/contributions", null, heightProposal)).status === 401);
-  check("contribution: another origin -> 403", (await call("POST", "/contributions", b.session, heightProposal, "https://evil.example")).status === 403);
-  const noTerms = await callJson("POST", "/contributions", b.session, heightProposal);
-  check("contribution: first one needs the ODbL agreement", noTerms.status === 400 && noTerms.body?.error === "terms");
-  const withTerms = (x) => ({ ...x, acceptTerms: true });
-  const bad = async (x) => (await callJson("POST", "/contributions", b.session, withTerms(x)));
-  const short = await bad({ ...heightProposal, comment: "taller" });
-  check("contribution: comment too short -> 400", short.status === 400 && short.body.errors.some((e) => /describe/.test(e)));
-  const korean = await bad({ ...heightProposal, comment: "높이를 수정했습니다 120미터" });
-  check("contribution: non-English comment -> 400", korean.status === 400);
-  check("contribution: height out of range -> 400", (await bad({ ...heightProposal, proposal: { height: 5000 } })).status === 400);
-  check("contribution: empty proposal -> 400", (await bad({ ...heightProposal, proposal: {} })).status === 400);
-  check("contribution: OSM way without its base -> 400", (await bad({ ...heightProposal, base: undefined })).status === 400);
-  const far = await bad({ ...heightProposal, proposal: { footprint: square(-73.9500, 40.7650) } });
-  check("contribution: footprint moved > 200 m -> 400", far.status === 400 && far.body.errors.some((e) => /200 m/.test(e)), far.body?.errors?.join("; "));
-  const ugly = await bad({ ...heightProposal, base: { ...wayBase, footprint: [[-73.96, 40.765], [-73.96, 40.765000001], [-73.95999, 40.765]] } });
-  check("contribution: height-only edit ignores the original's shape problems", ugly.status === 201, JSON.stringify(ugly.body));
-
-  const c1 = await callJson("POST", "/contributions", b.session, withTerms(heightProposal));
-  check("contribution submitted (201, pending)", c1.status === 201 && c1.body.status === "pending");
-  check("/me: ODbL agreement recorded", (await (await me(b.session)).json()).user?.acceptedTerms === true);
-  const mineList = await callJson("GET", "/me/contributions", b.session);
   const byId = (list, id) => list.find((c) => c.id === id);
-  check("a new proposal replaces the author's pending one for the same building", byId(mineList.body.contributions, c1.body.id)?.status === "pending" && byId(mineList.body.contributions, ugly.body.id)?.status === "withdrawn");
-  check("review queue: contributor -> 403", (await call("GET", "/contributions", b.session)).status === 403);
-  check("approve: contributor -> 403", (await call("POST", `/contributions/${c1.body.id}/approve`, b.session, {})).status === 403);
-  const q1 = await callJson("GET", "/contributions", a.session);
-  const q1c = byId(q1.body.contributions, c1.body.id);
-  check("review queue lists it with author, base and no conflict", q1c?.author.login === "octo-user" && q1c.base.tags.name === "Corner Shop" && q1c.stale === false && q1c.proposal.height === 120 && !byId(q1.body.contributions, ugly.body.id));
-  const ap1 = await callJson("POST", `/contributions/${c1.body.id}/approve`, a.session, {});
-  const T4 = tileOf(-73.96, 40.765);
-  const t4 = await getJson(`/overlay/14/${T4}.json`);
-  const f777 = t4.body?.add?.find((x) => x.id === 777);
-  check("approve: override published (height wins, OSM tags kept)", ap1.status === 200 && ap1.body.ref === "way:777" && t4.body.hide.includes(777) && f777?.tags["map3d:height"] === "120" && f777.tags.name === "Corner Shop" && f777.tags["building:levels"] === "2", JSON.stringify(f777?.tags));
-  check("approve twice -> 409", (await call("POST", `/contributions/${c1.body.id}/approve`, a.session, {})).status === 409);
-  check("author sees it approved", byId((await callJson("GET", "/me/contributions", b.session)).body.contributions, c1.body.id)?.status === "approved");
+  const mineOf = async (session) => (await callJson("GET", "/me/changesets", session)).body.changesets;
+  const tileJson = async (lng, lat) => (await getJson(`/overlay/14/${tileOf(lng, lat)}.json`)).body;
+  // wire format of src/contrib/mesh.ts: anchor in 1e-7°, vertices in mm (each the difference to the previous one), [n, i…] faces
+  const encode = (anchor, verts, faces) => {
+    const v = [];
+    let prev = [0, 0, 0];
+    for (let i = 0; i < verts.length; i += 3) {
+      const q = [0, 1, 2].map((k) => Math.round(verts[i + k] * 1000));
+      v.push(q[0] - prev[0], q[1] - prev[1], q[2] - prev[2]);
+      prev = q;
+    }
+    return { a: [Math.round(anchor[0] * 1e7), Math.round(anchor[1] * 1e7)], q: 1, v, f: faces.flatMap((f) => [f.length, ...f]) };
+  };
+  // a house with a gable roof (x east, y up, z south): 10 × 10 m, eaves at 5 m, ridge at 8 m
+  const houseVerts = [0, 0, 0, 10, 0, 0, 10, 0, -10, 0, 0, -10, 0, 5, 0, 10, 5, 0, 10, 5, -10, 0, 5, -10, 5, 8, 0, 5, 8, -10];
+  const houseFaces = [[3, 2, 1, 0], [0, 1, 5, 8, 4], [2, 3, 7, 9, 6], [1, 2, 6, 5], [3, 0, 4, 7], [5, 6, 9, 8], [7, 4, 8, 9]];
+  const houseAt = [-73.9585, 40.7655];
+  const house = encode(houseAt, houseVerts, houseFaces);
+  // a plain box: stored as footprint + height
+  const boxVerts = [0, 0, 0, 8, 0, 0, 8, 0, -8, 0, 0, -8, 0, 6, 0, 8, 6, 0, 8, 6, -8, 0, 6, -8];
+  const boxFaces = [[3, 2, 1, 0], [4, 5, 6, 7], [0, 1, 5, 4], [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7]];
+  const boxAt = [-73.9575, 40.7658];
 
-  // conflict: the building changes between proposal and approval
-  const c2 = await callJson("POST", "/contributions", b.session, { ref: "way:777", proposal: { levels: 30 }, comment: "It has thirty floors in total." });
+  const wayBase = { footprint: square(-73.9600, 40.7650), tags: { building: "yes", "building:levels": "2", name: "Corner Shop" } };
+  const shedBase = { footprint: square(-73.9590, 40.7652, 0.0001), tags: { building: "shed" } };
+  const items1 = [
+    { ref: "way:777", kind: "modify", base: wayBase, baseRev: "osm", proposal: { height: 120 } },
+    { kind: "create", clientId: "draft-house", proposal: { mesh: house } },
+    { ref: "way:999", kind: "delete", base: shedBase, baseRev: "osm" },
+  ];
+  const cs = (items, extra = {}) => ({ items, comment: "Surveyed the block on site, see the city 3D model.", ...extra });
+  check("changeset: no session -> 401", (await call("POST", "/changesets", null, cs(items1))).status === 401);
+  check("changeset: another origin -> 403", (await call("POST", "/changesets", b.session, cs(items1), "https://evil.example")).status === 403);
+  const needsTerms = await callJson("POST", "/changesets", b.session, cs(items1));
+  check("changeset: the first one needs the ODbL agreement", needsTerms.status === 400 && needsTerms.body?.error === "terms");
+  const submitB = (items, extra = {}) => callJson("POST", "/changesets", b.session, cs(items, { acceptTerms: true, ...extra }));
+  const errorsOf = (r) => r.body?.errors?.join("; ") ?? JSON.stringify(r.body);
+  const shortC = await submitB(items1, { comment: "taller" });
+  check("changeset: comment too short -> 400", shortC.status === 400 && shortC.body.errors.some((e) => /describe/.test(e)));
+  check("changeset: non-English comment -> 400", (await submitB(items1, { comment: "높이를 수정했습니다 120미터" })).status === 400);
+  check("changeset: height out of range -> 400", (await submitB([{ ...items1[0], proposal: { height: 5000 } }])).status === 400);
+  check("changeset: empty proposal -> 400", (await submitB([{ ...items1[0], proposal: {} }])).status === 400);
+  check("changeset: OSM way without its base -> 400", (await submitB([{ ...items1[0], base: undefined }])).status === 400);
+  const farC = await submitB([{ ...items1[0], proposal: { footprint: square(-73.9500, 40.7650) } }]);
+  check("changeset: footprint moved > 200 m -> 400", farC.status === 400 && farC.body.errors.some((e) => /200 m/.test(e)), errorsOf(farC));
+  check("changeset: the same building twice -> 400", (await submitB([items1[0], { ...items1[0], proposal: { levels: 4 } }])).status === 400);
+  check("changeset: 51 buildings -> 400", (await submitB(Array.from({ length: 51 }, (_, i) => ({ ...items1[0], ref: `way:${5000 + i}` })))).status === 400);
+  const spread = await submitB([items1[0], { kind: "create", proposal: { footprint: square(-73.9400, 40.7650), height: 10 } }]);
+  check("changeset: buildings more than 1 km apart -> 400", spread.status === 400 && spread.body.errors.some((e) => /1000 m/.test(e)), errorsOf(spread));
+  const holed = await submitB([{ kind: "create", proposal: { mesh: encode(houseAt, houseVerts, houseFaces.slice(1)) } }]);
+  check("mesh with a hole -> 400", holed.status === 400 && holed.body.errors.some((e) => /not closed/.test(e)), errorsOf(holed));
+  const inverted = await submitB([{ kind: "create", proposal: { mesh: encode(houseAt, houseVerts, houseFaces.map((f) => [...f].reverse())) } }]);
+  check("mesh turned inside out -> 400", inverted.status === 400 && inverted.body.errors.some((e) => /inwards/.test(e)), errorsOf(inverted));
+  const floating = await submitB([{ kind: "create", proposal: { mesh: encode(houseAt, houseVerts.map((v, i) => (i % 3 === 1 ? v + 3 : v)), houseFaces) } }]);
+  check("mesh above the ground -> 400", floating.status === 400 && floating.body.errors.some((e) => /ground/.test(e)), errorsOf(floating));
+  const badFace = await submitB([{ kind: "create", proposal: { mesh: { ...house, f: [3, 0, 1, 99] } } }]);
+  check("mesh face pointing at a missing vertex -> 400", badFace.status === 400);
+  check("changeset: started from an old version of the building -> 409", (await submitB([{ ...items1[0], baseRev: "2020-01-01T00:00:00.000Z" }])).status === 409);
+  const ugly = await submitB([{ ref: "way:778", kind: "modify", base: { ...wayBase, footprint: [[-73.96, 40.765], [-73.96, 40.765000001], [-73.95999, 40.765]] }, proposal: { height: 30 } }]);
+  check("changeset: height-only edit ignores the original's shape problems", ugly.status === 201, JSON.stringify(ugly.body));
+
+  const c1 = await submitB(items1);
+  check("changeset submitted (201, pending)", c1.status === 201 && c1.body.status === "pending", JSON.stringify(c1.body));
+  check("/me: ODbL agreement recorded", (await (await me(b.session)).json()).user?.acceptedTerms === true);
+  const mc1 = byId(await mineOf(b.session), c1.body.id);
+  check("my changesets list it with its buildings", mc1?.status === "pending" && mc1.items.length === 3 && mc1.items[1].clientId === "draft-house" && mc1.items[0].fields.includes("height") && mc1.items[1].fields.includes("shape") && mc1.items[2].kind === "delete", JSON.stringify(mc1));
+  const locked = await submitB([{ ...items1[0], proposal: { height: 121 } }]);
+  check("a building in my pending changeset can't go into another one", locked.status === 400 && locked.body.errors.some((e) => /pending changeset/.test(e)), errorsOf(locked));
+  check("review queue: contributor -> 403", (await call("GET", "/changesets", b.session)).status === 403);
+  check("approve: contributor -> 403", (await call("POST", `/changesets/${c1.body.id}/approve`, b.session, {})).status === 403);
+  const q1 = byId((await callJson("GET", "/changesets", a.session)).body.changesets, c1.body.id);
+  check("review queue lists it with its author and no conflict", q1?.author.login === "octo-user" && q1.stale === false && q1.items.length === 3);
+  const d1 = await callJson("GET", `/changesets/${c1.body.id}`, a.session);
+  check("changeset detail: full proposals, the OSM base and the mesh", d1.status === 200 && d1.body.items[0].base.tags.name === "Corner Shop" && d1.body.items[0].proposal.height === 120 && d1.body.items[1].proposal.mesh?.v.length === 30 && d1.body.items[2].kind === "delete", JSON.stringify(d1.body?.items?.map((i) => i.proposal)));
+  const ap1 = await callJson("POST", `/changesets/${c1.body.id}/approve`, a.session, {});
+  const f777 = (await tileJson(-73.96, 40.765))?.add?.find((x) => x.id === 777);
+  check("approve: every building published (height wins, OSM tags kept)", ap1.status === 200 && f777?.tags["map3d:height"] === "120" && f777.tags.name === "Corner Shop" && f777.tags["building:levels"] === "2", JSON.stringify(ap1.body));
+  const houseRef = ap1.body.items?.find((i) => i.kind === "create")?.ref;
+  const fHouse = (await tileJson(...houseAt))?.add?.find((x) => x.id < 0);
+  check("approved new mesh building: new: ref, negative id, mesh and outline in the tile", /^new:\d+$/.test(houseRef ?? "") && fHouse?.m?.f.length === house.f.length && fHouse.tags["map3d:mesh"] === "1" && fHouse.tags["map3d:height"] === "8" && fHouse.g[0][0].length === 10, JSON.stringify(fHouse?.tags));
+  const tShed = await tileJson(-73.959, 40.7652);
+  check("approved removal: the OSM way is hidden and nothing is added", tShed?.hide.includes(999) && !tShed.add.some((x) => x.id === 999), JSON.stringify(tShed));
+  check("approve twice -> 409", (await call("POST", `/changesets/${c1.body.id}/approve`, a.session, {})).status === 409);
+  const m1b = byId(await mineOf(b.session), c1.body.id);
+  check("author sees it approved, with the new building's ref", m1b?.status === "approved" && m1b.items[1].ref === houseRef);
+  check("a removed building can't be edited", (await submitB([{ ref: "way:999", kind: "modify", proposal: { height: 10 } }])).status === 400);
+
+  // a box is kept as an extruded footprint; resubmitting replaces my pending changeset
+  const c2 = await submitB([{ kind: "create", proposal: { mesh: encode(boxAt, boxVerts, boxFaces), levels: 2 } }]);
+  const d2 = await callJson("GET", `/changesets/${c2.body.id}`, b.session);
+  const p2 = d2.body?.items?.[0]?.proposal;
+  check("a box mesh is stored as footprint + height", c2.status === 201 && p2?.mesh === undefined && p2?.footprint?.length === 4 && p2.height === 6 && p2.levels === 2, JSON.stringify(p2));
+  check("superseding a changeset that is not mine -> 400", (await submitB([{ kind: "create", proposal: { footprint: square(-73.9570, 40.7660), height: 9 } }], { supersedes: ["00000000-0000-4000-8000-000000000000"] })).status === 400);
+  const c3 = await submitB([{ kind: "create", proposal: { mesh: encode(boxAt, boxVerts.map((v, i) => (i % 3 === 1 && v ? 9 : v)), boxFaces) } }], { supersedes: [c2.body.id] });
+  const mine3 = await mineOf(b.session);
+  check("resubmitting replaces my pending changeset", c3.status === 201 && byId(mine3, c2.body.id)?.status === "withdrawn" && byId(mine3, c2.body.id)?.supersededBy === c3.body.id, JSON.stringify(c3.body));
+
+  // replacing my own changeset that was decided meanwhile: nothing left to replace, the new one goes in
+  const c6x = await submitB([{ kind: "create", proposal: { footprint: square(-73.9572, 40.7661), height: 9 } }]);
+  await callJson("POST", `/changesets/${c6x.body.id}/reject`, a.session, { note: "Not there" });
+  const c7x = await submitB([{ kind: "create", proposal: { footprint: square(-73.9572, 40.7661), height: 9 } }], { supersedes: [c6x.body.id] });
+  const m7x = await mineOf(b.session);
+  check("superseding my changeset that was already rejected: accepted, the rejection stays", c7x.status === 201 && byId(m7x, c6x.body.id)?.status === "rejected" && !byId(m7x, c6x.body.id)?.supersededBy, JSON.stringify(c7x.body));
+  await callJson("POST", `/changesets/${c7x.body.id}/withdraw`, b.session, {});
+
+  // conflict: a building changes between proposal and approval
+  const c4 = await submitB([{ ref: "way:777", kind: "modify", baseRev: f777.tags["map3d:edited"], proposal: { levels: 30 } }]);
   await new Promise((r) => setTimeout(r, 5));
   await put(a.session, { ref: "way:777", edit: { footprint: wayBase.footprint, height: 99 } });
-  const q2 = await callJson("GET", "/contributions", a.session);
-  check("review queue flags a proposal whose building changed since", byId(q2.body.contributions, c2.body.id)?.stale === true);
-  const ap2 = await callJson("POST", `/contributions/${c2.body.id}/approve`, a.session, {});
-  check("approve after a change -> 409 conflict", ap2.status === 409 && ap2.body.error === "conflict" && byId((await callJson("GET", "/me/contributions", b.session)).body.contributions, c2.body.id)?.status === "conflict");
-  const ap2f = await callJson("POST", `/contributions/${c2.body.id}/approve`, a.session, { force: true });
-  const f777b = (await getJson(`/overlay/14/${T4}.json`)).body.add.find((x) => x.id === 777);
-  check("approve anyway: only the proposed field changes", ap2f.status === 200 && f777b.tags["building:levels"] === "30" && f777b.tags["map3d:height"] === "99", JSON.stringify(f777b.tags));
+  check("review queue flags a changeset whose building changed since", c4.status === 201 && byId((await callJson("GET", "/changesets", a.session)).body.changesets, c4.body.id)?.stale === true, JSON.stringify(c4.body));
+  const ap4 = await callJson("POST", `/changesets/${c4.body.id}/approve`, a.session, {});
+  check("approve after a change -> 409 conflict, naming the building", ap4.status === 409 && ap4.body.error === "conflict" && ap4.body.refs?.includes("way:777") && byId(await mineOf(b.session), c4.body.id)?.status === "conflict");
+  const ap4f = await callJson("POST", `/changesets/${c4.body.id}/approve`, a.session, { force: true });
+  const f777b = (await tileJson(-73.96, 40.765)).add.find((x) => x.id === 777);
+  check("approve anyway: only the proposed field changes", ap4f.status === 200 && f777b.tags["building:levels"] === "30" && f777b.tags["map3d:height"] === "99", JSON.stringify(f777b.tags));
 
-  // reject, withdraw, new building
-  const newHall = { proposal: { footprint: square(-73.9580, 40.7660), height: 15, buildingType: "commercial", name: "Park Kiosk" }, comment: "A kiosk that is missing from the map." };
-  const c3 = await callJson("POST", "/contributions", b.session, newHall);
-  check("reject without a reason -> 400", (await call("POST", `/contributions/${c3.body.id}/reject`, a.session, {})).status === 400);
-  const rj = await callJson("POST", `/contributions/${c3.body.id}/reject`, a.session, { note: "Duplicate of the kiosk next door" });
-  const c3mine = byId((await callJson("GET", "/me/contributions", b.session)).body.contributions, c3.body.id);
-  check("rejected with the reason shown to the author", rj.status === 200 && c3mine?.status === "rejected" && c3mine.reviewNote === "Duplicate of the kiosk next door");
-  const c4 = await callJson("POST", "/contributions", b.session, newHall);
-  check("withdraw by another user -> 404", (await call("POST", `/contributions/${c4.body.id}/withdraw`, a.session, {})).status === 404);
-  check("withdraw by the author", (await callJson("POST", `/contributions/${c4.body.id}/withdraw`, b.session, {})).body?.status === "withdrawn");
-  check("approve a withdrawn one -> 409", (await call("POST", `/contributions/${c4.body.id}/approve`, a.session, {})).status === 409);
-  const c5 = await callJson("POST", "/contributions", b.session, newHall);
-  const ap5 = await callJson("POST", `/contributions/${c5.body.id}/approve`, a.session, {});
-  const t5 = await getJson(`/overlay/14/${tileOf(-73.958, 40.766)}.json`);
-  const added = t5.body?.add?.find((x) => x.id < 0);
-  check("approved new building gets a new: ref and a negative id", ap5.status === 200 && /^new:\d+$/.test(ap5.body.ref) && added?.tags.name === "Park Kiosk" && added.tags.building === "commercial");
-  check("its contribution now points at the building", byId((await callJson("GET", "/me/contributions", b.session)).body.contributions, c5.body.id)?.ref === ap5.body.ref);
+  // a new height for a mesh building scales it up from its ground
+  const c5 = await submitB([{ ref: houseRef, kind: "modify", baseRev: fHouse.tags["map3d:edited"], proposal: { height: 16 } }]);
+  const ap5 = await callJson("POST", `/changesets/${c5.body.id}/approve`, a.session, {});
+  const fHouse2 = (await tileJson(...houseAt)).add.find((x) => x.id < 0);
+  const ridgeY = fHouse2?.m?.v.filter((_, i) => i % 3 === 1).reduce((s, d) => s + d, 0); // last vertex: the north ridge end
+  check("mesh building given a new height: scaled from its ground", c5.status === 201 && ap5.status === 200 && fHouse2.tags["map3d:height"] === "16" && ridgeY === 16000, `${JSON.stringify(c5.body)} ${ridgeY}`);
 
-  // limits: a GitHub account younger than 7 days gets 10 a day
+  // reject, withdraw
+  const kiosk = [{ kind: "create", proposal: { footprint: square(-73.9580, 40.7660), height: 15 } }];
+  const c6 = await submitB(kiosk);
+  check("reject without a reason -> 400", (await call("POST", `/changesets/${c6.body.id}/reject`, a.session, {})).status === 400);
+  const rj = await callJson("POST", `/changesets/${c6.body.id}/reject`, a.session, { note: "Duplicate of the kiosk next door" });
+  const c6mine = byId(await mineOf(b.session), c6.body.id);
+  check("rejected with the reason shown to the author", rj.status === 200 && c6mine?.status === "rejected" && c6mine.reviewNote === "Duplicate of the kiosk next door");
+  const c7 = await submitB(kiosk);
+  check("withdraw by another user -> 404", (await call("POST", `/changesets/${c7.body.id}/withdraw`, a.session, {})).status === 404);
+  check("withdraw by the author", (await callJson("POST", `/changesets/${c7.body.id}/withdraw`, b.session, {})).body?.status === "withdrawn");
+  check("approve a withdrawn one -> 409", (await call("POST", `/changesets/${c7.body.id}/approve`, a.session, {})).status === 409);
+
+  // admin direct edit with a mesh
+  const pm = await put(a.session, { edit: { mesh: encode([126.9790, 37.5670], houseVerts, houseFaces) } });
+  const fpm = (await tileJson(126.979, 37.567))?.add?.find((x) => x.m);
+  check("admin override with a mesh: published with its outline", pm.status === 200 && fpm?.tags["map3d:height"] === "8" && fpm.g[0][0].length === 10);
+
+  // limits: a GitHub account younger than 7 days
   mock.state.user = { id: 3003, login: "octo-new", avatar_url: null, created_at: new Date().toISOString() };
   const n = await signIn();
+  check("changeset detail: someone else's -> 404", (await call("GET", `/changesets/${c1.body.id}`, n.session)).status === 404);
+  const tooMany = await callJson("POST", "/changesets", n.session, cs(Array.from({ length: 11 }, (_, i) => ({ ref: `way:${6000 + i}`, kind: "modify", base: wayBase, proposal: { height: 20 } })), { acceptTerms: true }));
+  check("new GitHub account: 11 buildings in one changeset -> 400", tooMany.status === 400, errorsOf(tooMany));
   let lastStatus = 0;
-  for (let i = 0; i < 11; i++) lastStatus = (await call("POST", "/contributions", n.session, withTerms({ ...heightProposal, ref: "way:888", proposal: { height: 20 + i } }))).status;
-  check("new GitHub account: 11th contribution of the day -> 429", lastStatus === 429);
+  for (let i = 0; i < 4; i++) lastStatus = (await call("POST", "/changesets", n.session, cs([{ ref: `way:${7000 + i}`, kind: "modify", base: wayBase, proposal: { height: 20 + i } }], { acceptTerms: true }))).status;
+  check("new GitHub account: 4th changeset of the day -> 429", lastStatus === 429);
   mock.state.user = { id: 2002, login: "octo-user", avatar_url: null, created_at: "2024-01-01T00:00:00Z" };
 
   // 6. logout
@@ -249,7 +324,7 @@ try {
 
   // 8. audit log
   const actions = JSON.parse(sql("SELECT action FROM audit_log ORDER BY id").stdout)[0].results.map((r) => r.action);
-  check("audit log records sign-ins, overrides and contributions", ["login", "logout", "login_denied", "login_banned", "override_set", "override_removed", "terms_accepted", "contribution_submitted", "contribution_approved", "contribution_rejected", "contribution_withdrawn"].every((x) => actions.includes(x)), actions.join(","));
+  check("audit log records sign-ins, overrides and changesets", ["login", "logout", "login_denied", "login_banned", "override_set", "override_removed", "terms_accepted", "changeset_submitted", "changeset_approved", "changeset_rejected", "changeset_withdrawn"].every((x) => actions.includes(x)), actions.join(","));
 } catch (err) {
   check("unexpected error", false, err.stack);
   console.error(devLog.slice(-3000));

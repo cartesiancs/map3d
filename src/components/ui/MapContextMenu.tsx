@@ -1,16 +1,23 @@
 // Right-click menu of the 3D view, styled after the shadcn/ui Context Menu (Radix primitive + Emotion, no
 // Tailwind). Space.tsx decides when a right click opens it (a short click, not a rotate drag) and what was hit;
 // the menu is then opened at that point through a synthetic contextmenu event on an invisible trigger.
+// In Edit mode (three/edit/EditInput.tsx) it is the edit menu, and X opens the delete menu.
 
 import { css } from "@emotion/react";
 import { useEffect, useRef } from "react";
 import * as Menu from "@radix-ui/react-context-menu";
-import { Copy, Crosshair, ExternalLink, LogIn, Ruler } from "lucide-react";
-import { MenuTarget, pendingFor, useContribStore } from "@/state/contribStore";
+import { Box, Copy, Crosshair, ExternalLink, LogIn, LogOut, Pencil, PenTool, Trash2 } from "lucide-react";
+import { MenuTarget, useContribStore } from "@/state/contribStore";
 import { useAuthStore } from "@/state/authStore";
 import { useViewStore } from "@/state/viewStore";
-import { refOf } from "@/api/contributions";
-import { tileManager } from "@/three/Space";
+import { pendingFor, refOf } from "@/api/changesets";
+import { useEditStore } from "@/state/editStore";
+import * as ops from "@/edit/ops";
+import { selectNonManifold } from "@/edit/ops";
+import type { ElemMode } from "@/edit/select";
+import { editAction, runOp } from "@/three/edit/EditInput";
+import { editLayer } from "@/three/Space";
+import { Vector3 } from "three";
 import { englishName } from "@/utils/english";
 import { UI, iconSize } from "./styles";
 
@@ -81,11 +88,9 @@ function BuildingItems({ target }: { target: Extract<MenuTarget, { kind: "buildi
   const name = englishName(target.tags);
   const signedIn = status === "signedIn";
 
-  const setHeight = () => {
-    const info = tileManager.describe(target.key, target.index);
-    if (!info) return;
-    useViewStore.getState().select({ key: target.key, index: target.index, id: target.id, tags: target.tags });
-    useContribStore.getState().startHeightEdit({ ...target, height: info.height });
+  const edit = () => {
+    useContribStore.getState().closeMenu();
+    void useEditStore.getState().enter(target.id);
   };
 
   return (
@@ -96,10 +101,10 @@ function BuildingItems({ target }: { target: Extract<MenuTarget, { kind: "buildi
         <span css={sub}>{target.id < 0 ? "Added on map3d" : `OSM way ${target.id}`}</span>
       </Menu.Label>
       <Menu.Separator css={separator} />
-      <Menu.Item css={item} disabled={!signedIn} onSelect={setHeight}>
-        <Ruler css={iconSize(16)} />
-        {pending ? "Edit my proposal…" : "Set height…"}
-        <span css={shortcut}>H</span>
+      <Menu.Item css={item} disabled={!signedIn} onSelect={edit}>
+        <Pencil css={iconSize(16)} />
+        {pending ? "Edit my proposal" : "Edit"}
+        <span css={shortcut}>E</span>
       </Menu.Item>
       <Menu.Item css={item} onSelect={() => copy(coords(target.lat, target.lng))}>
         <Copy css={iconSize(16)} /> Copy coordinates
@@ -117,6 +122,151 @@ function BuildingItems({ target }: { target: Extract<MenuTarget, { kind: "buildi
           </Menu.Item>
         </>
       )}
+    </>
+  );
+}
+
+/** Edit mode: what can be done with the selection (by mode), adding buildings, views */
+function EditItems({ target }: { target: Extract<MenuTarget, { kind: "edit" }> }) {
+  const mode = useEditStore((s) => s.mode);
+  const count = useEditStore((s) => (s.mode === "object" ? s.objects.size : [...s.elems.values()].reduce((n, e) => n + e.verts.size, 0)));
+  const s = useEditStore.getState();
+  const none = count === 0;
+  const run = (a: string) => () => editAction(a);
+  const entry = (label: string, key: string, onSelect: () => void, disabled = none) => (
+    <Menu.Item css={item} disabled={disabled} onSelect={onSelect}>
+      {label}
+      <span css={shortcut}>{key}</span>
+    </Menu.Item>
+  );
+  return (
+    <>
+      <Menu.Label css={label}>
+        Edit mode
+        <span css={sub}>
+          {mode === "object" ? `${count} ${count === 1 ? "building" : "buildings"} selected` : `${mode[0].toUpperCase()}${mode.slice(1)} mode · ${count} vertices selected`}
+        </span>
+      </Menu.Label>
+      <Menu.Separator css={separator} />
+      {entry("Move", "G", run("g"))}
+      {entry("Rotate", "R", run("r"))}
+      {entry("Scale", "S", run("s"))}
+      {mode === "object" ? (
+        <>
+          {entry("Height", "", run("height"))}
+          {entry("Duplicate", "⇧D", run("duplicate"))}
+          <Menu.Item css={item} disabled={none} onSelect={() => s.deleteSelected()}>
+            <Trash2 css={iconSize(16)} /> Remove
+            <span css={shortcut}>X</span>
+          </Menu.Item>
+          <Menu.Separator css={separator} />
+          <Menu.Item
+            css={item}
+            disabled={target.lat === null}
+            onSelect={() => target.lat !== null && s.addBox([Math.round(target.lng! * 1e7) / 1e7, Math.round(target.lat * 1e7) / 1e7])}
+          >
+            <Box css={iconSize(16)} /> Add a building here
+            <span css={shortcut}>⇧A</span>
+          </Menu.Item>
+          <Menu.Item css={item} onSelect={() => s.setTool("draw")}>
+            <PenTool css={iconSize(16)} /> Draw a footprint
+          </Menu.Item>
+        </>
+      ) : (
+        <>
+          <Menu.Separator css={separator} />
+          {entry("Extrude", "E", run("extrude"))}
+          {entry("Inset faces", "I", run("inset"))}
+          {entry("Bevel edges", "Ctrl B", run("bevel"))}
+          {entry("Loop cut", "Ctrl R", run("loopcut"), false)}
+          {entry("Knife", "K", run("knife"), false)}
+          {entry("Merge…", "M", run("merge"))}
+          {entry("Fill", "F", () => runOp("Fill", (d, sel, m) => ops.fill({ mesh: d.mesh, sel, mode: m })))}
+          {entry("Connect", "J", () => runOp("Connect", (d, sel, m) => ops.connect({ mesh: d.mesh, sel, mode: m })))}
+          <Menu.Separator css={separator} />
+          <DeleteItems />
+          <Menu.Separator css={separator} />
+          {entry("Recalculate normals", "⇧N", () => runOp("Normals", (d, sel) => ({ mesh: ops.recalcNormals(d.mesh), sel })), false)}
+          {entry("Select problems", "", () => {
+            const elems = new Map(s.elems);
+            for (const id of s.objects) {
+              const d = s.drafts.get(id);
+              if (d) elems.set(id, selectNonManifold(d.mesh, s.mode as ElemMode));
+            }
+            s.setElems(elems);
+          }, false)}
+          {entry("Back to Object mode", "Tab", () => s.setMode("object"), false)}
+        </>
+      )}
+      <Menu.Separator css={separator} />
+      {entry("Frame selected", "Num .", run("frame"))}
+      <Menu.Item css={item} onSelect={() => s.requestExit()}>
+        <LogOut css={iconSize(16)} /> Exit Edit mode
+      </Menu.Item>
+    </>
+  );
+}
+
+/** Edit mode, M: merge the selected vertices at their center, at the one picked last, at the cursor, or by distance */
+function MergeItems({ cursor }: { cursor: [number, number, number] | null }) {
+  const merge = (at: "center" | "active" | "cursor") => () =>
+    runOp("Merge", (d, sel, m) => {
+      if (at !== "cursor") return ops.mergeAt({ mesh: d.mesh, sel, mode: m }, at);
+      const local = cursor && editLayer.toDraftMeters(d.id, new Vector3(...cursor));
+      if (!local) throw new ops.OpError("Point at a surface or the ground, then press M");
+      return ops.mergeAt({ mesh: d.mesh, sel, mode: m }, local);
+    });
+  const byDistance = (distance: number) => () => {
+    let merged = 0;
+    const ok = runOp("Merge by distance", (d, sel, m) => {
+      const out = ops.mergeByDistance({ mesh: d.mesh, sel, mode: m }, distance);
+      merged += out.merged;
+      return out;
+    });
+    if (ok) useAuthStore.getState().notify(merged ? `Merged ${merged} vertices` : "Nothing that close together");
+  };
+  return (
+    <>
+      <Menu.Label css={label}>Merge</Menu.Label>
+      <Menu.Separator css={separator} />
+      <Menu.Item css={item} onSelect={merge("center")}>
+        At center
+      </Menu.Item>
+      <Menu.Item css={item} onSelect={merge("active")}>
+        At last selected
+      </Menu.Item>
+      <Menu.Item css={item} disabled={!cursor} onSelect={merge("cursor")}>
+        At cursor
+      </Menu.Item>
+      <Menu.Separator css={separator} />
+      {[0.01, 0.05, 0.5].map((d) => (
+        <Menu.Item key={d} css={item} onSelect={byDistance(d)}>
+          By distance · {Math.round(d * 100)} cm
+        </Menu.Item>
+      ))}
+    </>
+  );
+}
+
+/** Edit mode, X: delete vertices / edges / faces, or dissolve them (their faces join) */
+function DeleteItems() {
+  const mode = useEditStore((s) => s.mode) as ElemMode;
+  const del = (what: "vertices" | "edges" | "faces") => () => runOp("Delete", (d, sel, m) => ops.deleteElements({ mesh: d.mesh, sel, mode: m }, what));
+  const dissolveLabel = mode === "vertex" ? "Dissolve vertices" : mode === "edge" ? "Dissolve edges" : "Dissolve faces";
+  return (
+    <>
+      <Menu.Item css={item} onSelect={del("vertices")}>
+        <Trash2 css={iconSize(16)} /> Delete vertices
+      </Menu.Item>
+      <Menu.Item css={item} onSelect={del("edges")}>
+        <Trash2 css={iconSize(16)} /> Delete edges
+      </Menu.Item>
+      <Menu.Item css={item} onSelect={del("faces")}>
+        <Trash2 css={iconSize(16)} /> Delete faces
+      </Menu.Item>
+      <Menu.Item css={item} onSelect={() => runOp("Dissolve", (d, sel, m) => ops.dissolve({ mesh: d.mesh, sel, mode: m }))}>
+        {dissolveLabel}
+      </Menu.Item>
     </>
   );
 }
@@ -150,18 +300,16 @@ export function MapContextMenu() {
     trigger.current.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: menu.x, clientY: menu.y }));
   }, [menu?.seq]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // H: Set height on the right-clicked building while the menu is open (shadcn-style shortcut hint)
+  // E: Edit the right-clicked building while the menu is open (shadcn-style shortcut hint)
   useEffect(() => {
     if (menu?.target.kind !== "building") return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key.toLowerCase() !== "h" || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key.toLowerCase() !== "e" || e.metaKey || e.ctrlKey || e.altKey) return;
       if (useAuthStore.getState().status !== "signedIn") return;
       const target = menu.target as Extract<MenuTarget, { kind: "building" }>;
-      const info = tileManager.describe(target.key, target.index);
-      if (!info) return;
       e.preventDefault();
-      useViewStore.getState().select({ key: target.key, index: target.index, id: target.id, tags: target.tags });
-      useContribStore.getState().startHeightEdit({ ...target, height: info.height });
+      useContribStore.getState().closeMenu();
+      void useEditStore.getState().enter(target.id);
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
@@ -175,7 +323,21 @@ export function MapContextMenu() {
       <Menu.Portal>
         {menu && (
           <Menu.Content css={content} collisionPadding={8} onCloseAutoFocus={(e) => e.preventDefault()}>
-            {menu.target.kind === "building" ? <BuildingItems target={menu.target} /> : <GroundItems target={menu.target} />}
+            {menu.target.kind === "building" ? (
+              <BuildingItems target={menu.target} />
+            ) : menu.target.kind === "edit" ? (
+              <EditItems target={menu.target} />
+            ) : menu.target.kind === "merge" ? (
+              <MergeItems cursor={menu.target.cursor} />
+            ) : menu.target.kind === "delete" ? (
+              <>
+                <Menu.Label css={label}>Delete</Menu.Label>
+                <Menu.Separator css={separator} />
+                <DeleteItems />
+              </>
+            ) : (
+              <GroundItems target={menu.target} />
+            )}
           </Menu.Content>
         )}
       </Menu.Portal>

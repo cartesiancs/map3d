@@ -6,12 +6,14 @@
 
 import { API_URL } from "./auth";
 import { fetchBytes } from "./retry";
+import type { EncodedMesh } from "@/contrib/mesh";
 
 const DATA_URL = (import.meta.env.VITE_OSM_DATA_URL ?? "https://cdn.map3d.fleet.im").replace(/\/+$/, "");
 export const OVERLAY_URL = (import.meta.env.VITE_OVERLAY_URL ?? (import.meta.env.DEV ? `${API_URL}/overlay` : `${DATA_URL}/overlay`)).replace(/\/+$/, "");
 
 export type OverlayIndex = { rev: number; tiles: Record<string, number> };
-export type OverlayFeature = { t: "w" | "r"; id: number; tags: Record<string, string>; g: number[][][] };
+/** `m`: a free 3D shape (src/contrib/mesh.ts wire format); `g` is then its outline */
+export type OverlayFeature = { t: "w" | "r"; id: number; tags: Record<string, string>; g: number[][][]; m?: EncodedMesh };
 export type OverlayTile = { hide: number[]; add: OverlayFeature[] };
 
 const EMPTY_INDEX: OverlayIndex = { rev: 0, tiles: {} };
@@ -44,8 +46,13 @@ export function applyOverlay<F extends { t: string; id: number }>(features: F[],
   return [...features.filter((f) => !(f.t === "w" && hidden.has(f.id))), ...(overlay.add as unknown as F[])];
 }
 
-// main thread: a short-lived cached index for one-off area queries (export)
+// main thread: a short-lived cached index for one-off area queries (export, Edit mode reading a building)
 let cached: { at: number; index: Promise<OverlayIndex> } | null = null;
+
+/** the index the map just switched to: area queries use it too (an edit approved a moment ago is in it) */
+export function primeOverlayIndex(index: OverlayIndex) {
+  cached = { at: performance.now(), index: Promise.resolve(index) };
+}
 export function overlayIndexCached(maxAgeMs = 30000): Promise<OverlayIndex> {
   if (!cached || performance.now() - cached.at > maxAgeMs) cached = { at: performance.now(), index: fetchOverlayIndex().then((i) => i ?? EMPTY_INDEX) };
   return cached.index;

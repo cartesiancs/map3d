@@ -1,9 +1,9 @@
-// map3d API (Cloudflare Worker): GitHub sign-in, contributions and their review, the published overlay
-// (see H:\map3d-osm\CONTRIBUTION-DESIGN.md).
+// map3d API (Cloudflare Worker): GitHub sign-in, changesets (Edit mode proposals) and their review, the
+// published overlay (see H:\map3d-osm\CONTRIBUTION-DESIGN.md).
 
 import { callback, login, logout, me } from "./auth";
-import { deleteOverride, listOverrides, putOverride } from "./admin";
-import { approve, mine, queue, reject, submit, withdraw } from "./contributions";
+import { deleteOverride, listOverrides, putOverride, republish } from "./admin";
+import { approve, detail, mine, queue, reject, submit, withdraw } from "./changesets";
 import { serveOverlay } from "./overlay";
 import { cors, json } from "./http";
 
@@ -42,10 +42,12 @@ export default {
       if (req.method === "POST" && pathname === "/auth/logout") return await logout(req, env);
       if (req.method === "GET" && pathname === "/me") return await me(req, env);
       if (req.method === "GET" && pathname.startsWith("/overlay/")) return await serveOverlay(env, pathname.slice("/overlay/".length));
-      if (req.method === "POST" && pathname === "/contributions") return await submit(req, env);
-      if (req.method === "GET" && pathname === "/contributions") return await queue(req, env);
-      if (req.method === "GET" && pathname === "/me/contributions") return await mine(req, env);
-      const action = req.method === "POST" && /^\/contributions\/([0-9a-f-]{36})\/(withdraw|approve|reject)$/.exec(pathname);
+      if (req.method === "POST" && pathname === "/changesets") return await submit(req, env);
+      if (req.method === "GET" && pathname === "/changesets") return await queue(req, env);
+      if (req.method === "GET" && pathname === "/me/changesets") return await mine(req, env);
+      const one = req.method === "GET" && /^\/changesets\/([0-9a-f-]{36})$/.exec(pathname);
+      if (one) return await detail(req, env, one[1]);
+      const action = req.method === "POST" && /^\/changesets\/([0-9a-f-]{36})\/(withdraw|approve|reject)$/.exec(pathname);
       if (action) {
         const [, id, verb] = action;
         if (verb === "withdraw") return await withdraw(req, env, id);
@@ -54,6 +56,7 @@ export default {
       }
       if (req.method === "GET" && pathname === "/admin/overrides") return await listOverrides(req, env);
       if (req.method === "PUT" && pathname === "/admin/overrides") return await putOverride(req, env);
+      if (req.method === "POST" && pathname === "/admin/republish") return await republish(req, env);
       if (req.method === "DELETE" && pathname.startsWith("/admin/overrides/")) return await deleteOverride(req, env, decodeURIComponent(pathname.slice("/admin/overrides/".length)));
       return json(req, env, { error: "not found" }, 404);
     } catch (err) {

@@ -1,10 +1,12 @@
 import { css } from "@emotion/react";
-import { Download, Github, Inbox, ListChecks, Loader2, LocateFixed, LogIn, LogOut, Minus, Plus, Search, Settings, ShieldCheck, User, X } from "lucide-react";
+import { Download, Github, Inbox, ListChecks, Loader2, LocateFixed, LogIn, LogOut, Minus, Plus, Search, Send, Settings, ShieldCheck, User, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { NamedBuilding, useAreaStore } from "@/state/areaStore";
 import { useViewStore } from "@/state/viewStore";
 import { useAuthStore } from "@/state/authStore";
 import { useContribStore } from "@/state/contribStore";
+import { changedDrafts, useEditStore } from "@/state/editStore";
+import { draftErrors } from "@/edit/drafts";
 import { City, loadCities, nearestCity, normalize, searchCities } from "@/data/cities";
 import { goToPlace } from "@/three/Space";
 import { UI, iconSize, mobile, pillButton, primaryButton, panel, spin } from "./styles";
@@ -300,6 +302,8 @@ const countBadge = css({
 function AccountButton() {
   const { status, user, notice, signIn, signOut, clearNotice } = useAuthStore();
   const setPanel = useContribStore((s) => s.setPanel);
+  // the panels would cover the edit tools: leave Edit mode first
+  const editing = useEditStore((s) => s.active);
   const queueSize = useContribStore((s) => s.queue.length);
   const [open, setOpen] = useState(false);
   const box = useRef<HTMLDivElement>(null);
@@ -373,6 +377,8 @@ function AccountButton() {
           <button
             role="menuitem"
             css={menuItem}
+            disabled={editing}
+            title={editing ? "Exit Edit mode first" : undefined}
             onClick={() => {
               setOpen(false);
               setPanel("mine");
@@ -384,6 +390,8 @@ function AccountButton() {
             <button
               role="menuitem"
               css={menuItem}
+              disabled={editing}
+              title={editing ? "Exit Edit mode first" : undefined}
               onClick={() => {
                 setOpen(false);
                 setPanel("review");
@@ -418,6 +426,44 @@ function AccountButton() {
   );
 }
 
+/** Edit mode, in the Download button's place: Contribute (yellow) sends the changes for review, Exit leaves */
+function EditButtons() {
+  const count = useEditStore((s) => changedDrafts(s).length);
+  const broken = useEditStore((s) => changedDrafts(s).some((d) => draftErrors(d).length > 0));
+  const s = useEditStore.getState();
+  return (
+    <>
+      <button
+        css={[pillButton, css({ padding: "0 14px", fontSize: 14, fontWeight: 600, color: UI.text, gap: 6 })]}
+        aria-label="Exit Edit mode"
+        title="Exit Edit mode (Esc)"
+        onClick={() => s.requestExit()}
+      >
+        <X css={iconSize(16)} />
+        <span css={css({ [mobile]: { display: "none" } })}>Exit</span>
+      </button>
+      <button
+        css={[
+          primaryButton,
+          css({
+            backgroundColor: UI.contribute,
+            color: UI.contributeFg,
+            ":hover": { backgroundColor: UI.contributeHover },
+            [mobile]: { padding: 0, width: UI.barHeight },
+          }),
+        ]}
+        aria-label="Contribute"
+        title={broken ? "Some changed buildings can't be submitted yet" : count ? `Send ${count} changed ${count === 1 ? "building" : "buildings"} for review` : "Change a building first"}
+        disabled={!count}
+        onClick={() => s.setDialog("contribute")}
+      >
+        <Send css={iconSize(16)} />
+        <span css={css({ [mobile]: { display: "none" } })}>Contribute{count ? ` (${count})` : ""}</span>
+      </button>
+    </>
+  );
+}
+
 export function TopBar({
   settingsOpen,
   onToggleSettings,
@@ -432,6 +478,7 @@ export function TopBar({
   downloading: boolean;
 }) {
   const zoom = useViewStore((s) => s.zoom);
+  const editing = useEditStore((s) => s.active);
 
   return (
     <div
@@ -491,6 +538,9 @@ export function TopBar({
           <Github css={iconSize(18)} />
         </button>
         <AccountButton />
+        {editing ? (
+          <EditButtons />
+        ) : (
         <button
           css={[primaryButton, css({ [mobile]: { padding: 0, width: UI.barHeight } })]}
           aria-label={downloadOpen ? "Close" : "Download"}
@@ -509,6 +559,7 @@ export function TopBar({
             {downloading ? "Preparing" : downloadOpen ? "Close" : "Download"}
           </span>
         </button>
+        )}
       </div>
     </div>
   );

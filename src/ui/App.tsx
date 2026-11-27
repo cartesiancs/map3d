@@ -7,7 +7,10 @@ import { SettingsPanel } from "@/components/ui/SettingsPanel";
 import { BuildingPanel } from "@/components/ui/BuildingPanel";
 import { DownloadMap } from "@/components/ui/DownloadMap";
 import { MapContextMenu } from "@/components/ui/MapContextMenu";
-import { HeightEditor } from "@/components/ui/HeightEditor";
+import { ModeBar } from "@/components/edit/ModeBar";
+import { EditToolbar } from "@/components/edit/EditToolbar";
+import { EditPanel } from "@/components/edit/EditPanel";
+import { EditDialogs } from "@/components/edit/EditDialogs";
 import { ContributionsPanel } from "@/components/ui/ContributionsPanel";
 import { LoadProgress } from "@/components/ui/LoadProgress";
 import { UI, iconSize, spin } from "@/components/ui/styles";
@@ -15,6 +18,7 @@ import { START_VIEW, useAreaStore } from "@/state/areaStore";
 import { useViewStore } from "@/state/viewStore";
 import { useAuthStore } from "@/state/authStore";
 import { useContribStore } from "@/state/contribStore";
+import { changedDrafts, useEditStore } from "@/state/editStore";
 import { BBox } from "@/api/osmSource";
 import { exportAreaGLB } from "@/three/exportArea";
 import { toScene } from "@/three/tiles/geo";
@@ -119,11 +123,8 @@ function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
+      if (useEditStore.getState().active) return; // Edit mode steps back on its own (three/edit/EditInput.tsx)
       const contrib = useContribStore.getState();
-      if (contrib.heightEdit) {
-        contrib.closeHeightEdit(); // one step back: the building stays selected
-        return;
-      }
       contrib.setPanel(null);
       setSettingsOpen(false);
       if (!downloading) setDownloadOpen(false);
@@ -132,6 +133,27 @@ function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [downloading, select]);
+
+  // Edit mode takes over the screen: the download panel closes; leaving the page warns about unsent changes
+  const editing = useEditStore((s) => s.active);
+  useEffect(() => {
+    if (editing) {
+      setDownloadOpen(false);
+      setSettingsOpen(false);
+    }
+  }, [editing]);
+  useEffect(() => {
+    const onLeave = (e: BeforeUnloadEvent) => {
+      const s = useEditStore.getState();
+      if (s.active && changedDrafts(s).length) e.preventDefault();
+    };
+    window.addEventListener("beforeunload", onLeave);
+    return () => window.removeEventListener("beforeunload", onLeave);
+  }, []);
+  // signing out ends Edit mode (changes stay saved on this device)
+  useEffect(() => {
+    if (authStatus !== "signedIn" && useEditStore.getState().active) useEditStore.getState().exit(true);
+  }, [authStatus]);
 
   const handleDownload = async (bbox: BBox) => {
     setDownloading(true);
@@ -172,8 +194,11 @@ function App() {
       />
       <SettingsPanel open={settingsOpen} />
       <BuildingPanel />
-      <HeightEditor />
       <ContributionsPanel />
+      <ModeBar />
+      <EditPanel />
+      <EditToolbar />
+      <EditDialogs />
       <MapContextMenu />
       <DownloadMap
         open={downloadOpen}
