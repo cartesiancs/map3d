@@ -1,4 +1,4 @@
-// Edit mode, right edge: the tools, as in Blender's toolbar. Object mode: select, move, rotate, scale,
+// Edit mode (Shape editing), right edge: the tools, as in Blender's toolbar. Object mode: select, move, rotate, scale,
 // height, add a box / draw a footprint, duplicate, remove. Vertex / edge / face modes: the transforms and
 // the mesh tools (extrude, inset, bevel, loop cut, knife, merge, fill, delete, normals). Then the views.
 
@@ -111,9 +111,10 @@ const button = (on: boolean, danger = false) =>
 
 export function EditToolbar() {
   const active = useEditStore((s) => s.active);
+  const editing = useEditStore((s) => s.editing);
   const mode = useEditStore((s) => s.mode);
   const current = useEditStore((s) => s.tool);
-  if (!active) return null;
+  if (!active || editing === "height") return null; // Height editing has no tools: drag or type
   const items = mode === "object" ? OBJECT : ELEMENT;
   const views: [string, () => void, LucideIcon][] = [
     ["Top view (Numpad 7)", () => useViewStore.getState().view("top"), Eye],

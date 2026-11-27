@@ -3,9 +3,10 @@
 // lives in src/state/editStore.ts.
 
 import type { BuildingBase, ItemInput, Proposal } from "@/api/changesets";
-import { MeshData, classifyPrism, encodeMesh, groundCenter, isWire, meshOutline, normalizeMesh, toLocal, validateMesh } from "@/contrib/mesh";
+import { MeshData, classifyPrism, encodeMesh, groundCenter, isWire, meshHeight, meshOutline, normalizeMesh, toLocal, validateMesh } from "@/contrib/mesh";
 import { selfIntersections } from "./intersect";
-import type { LngLat } from "@/contrib/validate";
+import { withHeight } from "./transform";
+import { LIMITS, type LngLat } from "@/contrib/validate";
 
 /** the API's limits (worker/src/changesets.ts RULES), checked here first so they show before submitting */
 export const CHANGESET_LIMITS = { maxMoveM: 200, maxSpanM: 1000, maxBodyBytes: 1_000_000, maxBuildings: 50 };
@@ -55,6 +56,12 @@ export function isChanged(d: Draft) {
   return d.deleted || shapeChanged(d) || d.levels !== d.originalLevels;
 }
 
+/** changed in height (and levels) only, if at all: the building as it was, taller or lower (Height editing) */
+export function onlyHeight(d: Draft): boolean {
+  if (d.kind !== "modify" || d.deleted || !d.original) return false;
+  return !shapeChanged(d) || sameMesh(d.mesh, withHeight(d.original, meshHeight(d.mesh)));
+}
+
 export type DraftStatus = "modified" | "new" | "deleted" | "unchanged";
 export function draftStatus(d: Draft): DraftStatus {
   if (d.kind === "create") return "new";
@@ -81,10 +88,28 @@ export function movedM(d: Draft): number {
   return Math.hypot(x, z);
 }
 
+/** does the draft send a footprint or a mesh (else only a height and levels, which the API does not check as a shape) */
+const sendsShapeOf = new WeakMap<Draft, boolean>();
+function sendsShape(d: Draft): boolean {
+  let v = sendsShapeOf.get(d);
+  if (v === undefined) {
+    const p = toItem(d).proposal ?? {};
+    v = !!(p.footprint || p.mesh);
+    sendsShapeOf.set(d, v);
+  }
+  return v;
+}
+
 /** problems that block submitting the draft (its shape, when that changed, and how far it moved) */
 const checked = new WeakMap<MeshData, string[]>();
 export function draftErrors(d: Draft): string[] {
   if (d.deleted || !shapeChanged(d)) return [];
+  // only taller or lower: the footprint stays as it is on the map (an OSM footprint the shape rules would
+  // refuse, crossing itself say, can still be given a height), so only the height is checked
+  if (d.kind === "modify" && !sendsShape(d)) {
+    const h = meshHeight(d.mesh);
+    return h >= LIMITS.minHeight && h <= LIMITS.maxHeight ? [] : [`the height must be between ${LIMITS.minHeight} and ${LIMITS.maxHeight} m`];
+  }
   let errors = checked.get(d.mesh);
   if (!errors) {
     errors = validateMesh(normalizeMesh(d.mesh));

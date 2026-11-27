@@ -1,6 +1,6 @@
 import { css } from "@emotion/react";
 import { useViewStore } from "@/state/viewStore";
-import { Pencil } from "lucide-react";
+import { ArrowUpFromLine, Pencil } from "lucide-react";
 import { UI, iconSize, mobile, panel, pillButton } from "./styles";
 import { useContribStore } from "@/state/contribStore";
 import { useEditStore } from "@/state/editStore";
@@ -53,6 +53,8 @@ function Row({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
+
+const editButton = [pillButton, css({ padding: "0 14px", fontSize: 14, fontWeight: 600, color: UI.text, backgroundColor: UI.control, gap: 6 })];
 
 export function BuildingPanel() {
   const current = useViewStore((s) => s.selected);
@@ -167,16 +169,25 @@ export function BuildingPanel() {
           </details>
         )}
         {pending && (
-          <p css={css({ margin: "20px 0 0", fontSize: 13, color: UI.pendingFg })}>Your proposal ({describeChangeset(pending)}) is waiting for review.</p>
+          <p css={css({ margin: "20px 0 0", fontSize: 13, color: UI.pendingFg })}>Your proposal ({describeChangeset(pending)}) is waiting for review. Editing reopens it.</p>
         )}
         {signedIn && selected && (
-          <button
-            onClick={() => void useEditStore.getState().enter(selected.id)}
-            title="Change its shape, height or place, or remove it (with other buildings, in Edit mode)"
-            css={[pillButton, css({ marginTop: 18, padding: "0 14px", fontSize: 14, fontWeight: 600, color: UI.text, backgroundColor: UI.control, gap: 6, [mobile]: { display: "none" } })]}
-          >
-            <Pencil css={iconSize(15)} /> {pending ? "Edit my proposal" : "Edit"}
-          </button>
+          <div css={css({ display: "flex", gap: 8, marginTop: 18, flexWrap: "wrap", [mobile]: { display: "none" } })}>
+            <button
+              onClick={() => void useEditStore.getState().enter(selected.id, "height")}
+              title="Change its height and levels (and those of other buildings), in Edit mode"
+              css={editButton}
+            >
+              <ArrowUpFromLine css={iconSize(15)} /> Edit height
+            </button>
+            <button
+              onClick={() => void useEditStore.getState().enter(selected.id, "shape")}
+              title="Change its shape or place, remove it or add buildings, in Edit mode"
+              css={editButton}
+            >
+              <Pencil css={iconSize(15)} /> Edit shape
+            </button>
+          </div>
         )}
         <p css={css({ margin: "24px 0 0", fontSize: 12, color: UI.placeholder })}>{source(selected?.id, tags)}</p>
       </div>

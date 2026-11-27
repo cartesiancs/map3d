@@ -1,6 +1,7 @@
 // Edit mode, right (left of the toolbar): the active building — its size (X east, Y north, Z = height;
 // typed values scale it), levels, whether its shape can be submitted — the selection's middle in the
-// element modes (typed values move it), and every building changed in this session.
+// element modes (typed values move it), and every building changed in this session. In Height editing:
+// only the height and levels of the buildings picked (typed values apply to all of them).
 
 import { css } from "@emotion/react";
 import { useEffect, useMemo, useState } from "react";
@@ -35,7 +36,7 @@ export function draftTitle(d: Draft) {
 }
 
 /** a number field that commits on Enter or when it loses focus */
-function NumberField({ label, value, onCommit, step = 0.1, min, max, unit = "m", disabled }: { label: string; value: number | null; onCommit: (v: number | null) => void; step?: number; min?: number; max?: number; unit?: string; disabled?: boolean }) {
+function NumberField({ label, value, onCommit, step = 0.1, min, max, unit = "m", disabled, placeholder, name }: { label: string; value: number | null; onCommit: (v: number | null) => void; step?: number; min?: number; max?: number; unit?: string; disabled?: boolean; placeholder?: string; name?: string }) {
   const shown = value === null ? "" : String(r1(value));
   const [text, setText] = useState(shown);
   useEffect(() => setText(shown), [shown]);
@@ -55,6 +56,8 @@ function NumberField({ label, value, onCommit, step = 0.1, min, max, unit = "m",
         step={step}
         value={text}
         disabled={disabled}
+        placeholder={placeholder}
+        aria-label={name}
         onChange={(e) => setText(e.target.value)}
         onBlur={commit}
         onKeyDown={(e) => {
@@ -97,7 +100,7 @@ function ActiveBuilding({ d }: { d: Draft }) {
   /** scale along one axis about the middle of the footprint (height: from the ground) */
   const resize = (axis: "x" | "y" | "z", to: number | null) => {
     if (to === null || to <= 0) return;
-    if (axis === "z") return s.setHeight(d.id, to);
+    if (axis === "z") return s.setHeight([d.id], to);
     const from = axis === "x" ? dims.x : dims.y;
     if (!(from > 0)) return;
     const k = to / from;
@@ -124,7 +127,7 @@ function ActiveBuilding({ d }: { d: Draft }) {
           </div>
           <div css={css({ marginTop: 12 })}>
             <span css={fieldLabel}>Levels</span>
-            <NumberField label="" value={d.levels} step={1} min={1} max={LIMITS.maxLevels} unit="" onCommit={(v) => s.setLevels(d.id, v === null ? null : Math.round(v))} />
+            <NumberField label="" value={d.levels} step={1} min={1} max={LIMITS.maxLevels} unit="" onCommit={(v) => s.setLevels([d.id], v === null ? null : Math.round(v))} />
           </div>
           <div css={[small, css({ marginTop: 10 })]}>
             Footprint {footprint.toLocaleString("en")} m² · {d.mesh.verts.length / 3} vertices · {d.mesh.faces.length} faces
@@ -183,6 +186,99 @@ function ActiveBuilding({ d }: { d: Draft }) {
       {status !== "unchanged" && (
         <button css={[pillButton, css({ marginTop: 12, height: 30, padding: "0 12px", fontSize: 13, fontWeight: 600, color: UI.text, backgroundColor: UI.control, gap: 6 })]} onClick={() => s.revert(d.id)}>
           <RotateCcw css={iconSize(14)} /> {d.kind === "create" ? "Remove this new building" : d.deleted ? "Bring it back" : "Revert to how it was"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** the problems that block submitting a building, if any */
+function Errors({ errors }: { errors: string[] }) {
+  if (!errors.length) return null;
+  return (
+    <div css={css({ marginTop: 8, fontSize: 13, color: UI.danger })}>
+      <div css={css({ display: "flex", gap: 6, alignItems: "center", fontWeight: 600 })}>
+        <AlertTriangle css={iconSize(14)} /> Can't be submitted yet
+      </div>
+      <ul css={css({ margin: "4px 0 0", paddingLeft: 18 })}>
+        {errors.map((e) => (
+          <li key={e}>{e}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** Height editing: the height and levels of the buildings picked; typed values apply to all of them */
+function HeightFields() {
+  const s = useEditStore.getState();
+  const objects = useEditStore((st) => st.objects);
+  const drafts = useEditStore((st) => st.drafts);
+  const picked = [...objects].map((id) => drafts.get(id)).filter((d): d is Draft => !!d && !d.deleted);
+  if (!picked.length)
+    return (
+      <p css={[small, css({ margin: 0, lineHeight: 1.6 })]}>
+        Click a building to change its height (Shift+click: several). Drag it up or down (or press <strong>G</strong>), or type the height here.
+      </p>
+    );
+  const ids = picked.map((d) => d.id);
+  const heights = picked.map((d) => r1(meshHeight(d.mesh)));
+  const sameHeight = heights.every((h) => h === heights[0]);
+  const sameLevels = picked.every((d) => d.levels === picked[0].levels);
+  const one = picked.length === 1 ? picked[0] : null;
+  const status = one ? draftStatus(one) : null;
+  const title = one ? draftTitle(one) : null;
+  const broken = picked.filter((d) => draftErrors(d).length > 0).length;
+  return (
+    <div>
+      {one && title && status ? (
+        <>
+          <div css={css({ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 })}>
+            <h3 css={css({ margin: 0, fontSize: 17, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" })}>{title.name}</h3>
+            <span css={css({ fontSize: 12, fontWeight: 600, color: STATUS[status].fg, flexShrink: 0 })}>{STATUS[status].label}</span>
+          </div>
+          <div css={[small, css({ marginTop: 2 })]}>{title.where}</div>
+        </>
+      ) : (
+        <>
+          <h3 css={css({ margin: 0, fontSize: 17, fontWeight: 600 })}>{picked.length} buildings selected</h3>
+          <div css={[small, css({ marginTop: 2 })]}>What you type applies to all of them</div>
+        </>
+      )}
+      <div css={css({ marginTop: 12 })}>
+        <span css={fieldLabel}>Height</span>
+        <NumberField
+          label=""
+          name="Height"
+          value={sameHeight ? heights[0] : null}
+          placeholder={sameHeight ? undefined : "Mixed"}
+          min={LIMITS.minHeight}
+          max={LIMITS.maxHeight}
+          onCommit={(v) => v !== null && s.setHeight(ids, v)}
+        />
+      </div>
+      <div css={css({ marginTop: 12 })}>
+        <span css={fieldLabel}>Levels</span>
+        <NumberField
+          label=""
+          name="Levels"
+          value={sameLevels ? picked[0].levels : null}
+          placeholder={sameLevels ? undefined : "Mixed"}
+          step={1}
+          min={1}
+          max={LIMITS.maxLevels}
+          unit=""
+          onCommit={(v) => s.setLevels(ids, v === null ? null : Math.round(v))}
+        />
+      </div>
+      {one ? (
+        <Errors errors={draftErrors(one)} />
+      ) : (
+        broken > 0 && <div css={css({ marginTop: 8, fontSize: 13, color: UI.danger })}>{broken} of them can't be submitted yet</div>
+      )}
+      {one && status !== "unchanged" && (
+        <button css={[pillButton, css({ marginTop: 12, height: 30, padding: "0 12px", fontSize: 13, fontWeight: 600, color: UI.text, backgroundColor: UI.control, gap: 6 })]} onClick={() => s.revert(one.id)}>
+          <RotateCcw css={iconSize(14)} /> {one.kind === "create" ? "Remove this new building" : "Revert to how it was"}
         </button>
       )}
     </div>
@@ -269,6 +365,7 @@ function Changes() {
 
 export function EditPanel() {
   const active = useEditStore((s) => s.active);
+  const editing = useEditStore((s) => s.editing);
   const activeId = useEditStore((s) => s.activeId);
   const drafts = useEditStore((s) => s.drafts);
   const count = changedDrafts({ drafts }).length;
@@ -282,7 +379,7 @@ export function EditPanel() {
         css({
           position: "fixed",
           top: 94,
-          right: UI.side + 44 + 10,
+          right: editing === "height" ? UI.side : UI.side + 44 + 10, // the toolbar's place when it is not shown
           width: 320,
           maxHeight: "calc(100vh - 178px)",
           overflowY: "auto",
@@ -294,7 +391,9 @@ export function EditPanel() {
         }),
       ]}
     >
-      {d ? (
+      {editing === "height" ? (
+        <HeightFields />
+      ) : d ? (
         <>
           <ActiveBuilding d={d} />
           <SelectionMiddle d={d} />

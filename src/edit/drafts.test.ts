@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { MeshData, prismToMesh } from "@/contrib/mesh";
+import { MeshData, normalizeMesh, prismToMesh, validateMesh } from "@/contrib/mesh";
 import type { LngLat } from "@/contrib/validate";
-import { Draft, changesetErrors, draftErrors, isChanged, movedM, toItem } from "./drafts";
+import { Draft, changesetErrors, draftErrors, isChanged, movedM, onlyHeight, toItem } from "./drafts";
 import { mapVerts, withHeight } from "./transform";
 
 const ring = (lng: number, lat: number, d = 0.0002): LngLat[] => [
@@ -87,5 +87,37 @@ describe("limits checked before sending", () => {
     const m = prismToMesh(ring(126.978, 37.5665), 10);
     const many = Array.from({ length: 51 }, (_, i) => draft(withHeight(m, 12), m, { id: `way:${i}`, ref: `way:${i}` }));
     expect(changesetErrors(many).join()).toMatch(/at most 50/);
+  });
+});
+
+describe("Height editing", () => {
+  it("onlyHeight: taller or lower, or not changed at all", () => {
+    const m = prismToMesh(ring(126.978, 37.5665), 10);
+    expect(onlyHeight(draft(m))).toBe(true);
+    expect(onlyHeight(draft(withHeight(m, 31.5), m))).toBe(true);
+    expect(onlyHeight(draft(withHeight(m, 31.5), m, { levels: 9 }))).toBe(true);
+  });
+
+  it("onlyHeight: not when moved, reshaped, removed or new", () => {
+    const m = prismToMesh(ring(126.978, 37.5665), 10);
+    expect(onlyHeight(draft(mapVerts(m, null, ([x, y, z]) => [x + 3, y, z]), m))).toBe(false);
+    const bent = { ...m, verts: m.verts.map((v, i) => (i === 3 * 4 + 1 ? v + 3 : v)) };
+    expect(onlyHeight(draft(bent, m))).toBe(false);
+    expect(onlyHeight(draft(m, m, { deleted: true }))).toBe(false);
+    expect(onlyHeight(draft(m, null, { kind: "create", ref: null, featureId: null, base: null }))).toBe(false);
+  });
+
+  it("a footprint the shape rules refuse (it crosses itself) can still be given a height", () => {
+    const [lng, lat, d] = [126.978, 37.5665, 0.0002];
+    const m = prismToMesh([[lng, lat], [lng + d, lat + d], [lng + d, lat], [lng, lat + d]], 10);
+    expect(validateMesh(normalizeMesh(m)).length).toBeGreaterThan(0);
+    const taller = draft(withHeight(m, 14), m);
+    expect(draftErrors(taller)).toEqual([]);
+    expect(toItem(taller).proposal).toEqual({ height: 14 });
+  });
+
+  it("…but only within the height limits", () => {
+    const m = prismToMesh(ring(126.978, 37.5665), 10);
+    expect(draftErrors(draft(withHeight(m, 950), m)).join()).toMatch(/between 2 and 900 m/);
   });
 });

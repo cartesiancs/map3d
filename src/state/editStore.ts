@@ -2,12 +2,15 @@
 // added, then sent for review together as one changeset (Contribute). The session holds the drafts
 // (src/edit/drafts.ts), what is selected (whole buildings in Object mode; vertices, edges or faces in the
 // other modes, across every building being edited) and an undo history of both.
+//
+// Two ways to edit, switched at any time without losing anything: Height (only the height and levels of
+// the buildings picked; no tools) and Shape (the whole mesh editor). The last one used is the default.
 
 import { create } from "zustand";
 import type { ChangesetDetail } from "@/api/changesets";
 import { fetchChangeset, pendingFor, refOf } from "@/api/changesets";
 import type { LngLat } from "@/contrib/validate";
-import { Draft, isChanged, newDraftId } from "@/edit/drafts";
+import { Draft, isChanged, newDraftId, onlyHeight } from "@/edit/drafts";
 import { draftsOf, loadDraft } from "@/edit/load";
 import { Saved, loadSaved, save } from "@/edit/autosave";
 import { ElemSel, convertSelection, emptySelection, selectEverything } from "@/edit/select";
@@ -19,6 +22,8 @@ import { useViewStore } from "./viewStore";
 import { useCarStore } from "./carStore";
 
 export type Mode = "object" | "vertex" | "edge" | "face";
+/** Height: only the height and levels of buildings; Shape: the mesh editor */
+export type Editing = "height" | "shape";
 export type Tool = "select" | "move" | "rotate" | "scale" | "height" | "extrude" | "inset" | "bevel" | "loopcut" | "knife" | "draw";
 export type Pivot = "median" | "individual";
 export type { ElemSel };
@@ -35,8 +40,25 @@ type Snapshot = {
 
 const UNDO_STEPS = 100;
 
+// the way of editing used last (this browser only)
+const EDITING_KEY = "map3d.editing";
+function savedEditing(): Editing {
+  try {
+    if (localStorage.getItem(EDITING_KEY) === "shape") return "shape";
+  } catch {}
+  return "height";
+}
+function rememberEditing(e: Editing) {
+  try {
+    localStorage.setItem(EDITING_KEY, e);
+  } catch {}
+}
+/** what a building's Edit opens without saying which (the E key, "Edit" of a proposal) */
+export const defaultEditing = savedEditing;
+
 type EditStore = Snapshot & {
   active: boolean;
+  editing: Editing;
   mode: Mode;
   tool: Tool;
   pivot: Pivot;
@@ -55,8 +77,10 @@ type EditStore = Snapshot & {
   /** an earlier unsubmitted session, offered back on entering */
   restore: Saved | null;
 
-  /** open Edit mode, optionally with a building (feature id) */
-  enter: (featureId?: number) => Promise<void>;
+  /** open Edit mode, optionally with a building (feature id); `editing`: as chosen, else the last one used */
+  enter: (featureId?: number, editing?: Editing) => Promise<void>;
+  /** Height or Shape editing (the changes so far stay) */
+  setEditing: (editing: Editing) => void;
   /** close, asking first when something changed */
   requestExit: () => void;
   /** close and discard (or keep the changes on this device, offered again next time) */
@@ -93,8 +117,9 @@ type EditStore = Snapshot & {
   duplicateSelected: (preview?: boolean) => string[];
   addBox: (at: LngLat) => string;
   addDraft: (draft: Draft) => void;
-  setHeight: (id: string, height: number) => void;
-  setLevels: (id: string, levels: number | null) => void;
+  /** the height (m, scaled up from the ground) of buildings, as one undo step */
+  setHeight: (ids: string[], height: number) => void;
+  setLevels: (ids: string[], levels: number | null) => void;
   revert: (id: string) => void;
   /** after a successful Contribute */
   finish: () => void;
@@ -102,6 +127,8 @@ type EditStore = Snapshot & {
 
 const snapshot = (s: Snapshot): Snapshot => ({ drafts: s.drafts, objects: s.objects, activeId: s.activeId, elems: s.elems });
 let modalStart: Snapshot | null = null;
+/** the way of editing was chosen on entering ("Edit height" / "Edit shape"), not taken from the last time */
+let explicitChoice = false;
 
 const EMPTY: Snapshot & Pick<EditStore, "mode" | "supersedes" | "undoStack" | "redoStack" | "loading" | "hint" | "dialog" | "restore"> = {
   drafts: new Map(),
@@ -131,21 +158,32 @@ export const useEditStore = create<EditStore>((set, get) => {
     for (const d of drafts) map.set(d.id, d);
     record({ drafts: map, objects: new Set(drafts.map((d) => d.id)), activeId: drafts[0]?.id ?? null });
     if (supersede && !s.supersedes.includes(supersede)) set({ supersedes: [...s.supersedes, supersede] });
+    // edits brought back that are more than heights open for shape editing, unless Height was chosen
+    if (get().editing === "height" && !explicitChoice && drafts.some((d) => isChanged(d) && !onlyHeight(d))) {
+      get().setEditing("shape");
+      notify("Opened for shape editing: these edits change more than heights");
+      return true;
+    }
+    return false;
   };
 
   return {
     ...EMPTY,
     active: false,
+    editing: savedEditing(),
     tool: "move",
     pivot: "median",
     snap: false,
     snapTo: ["vertex", "edge"],
 
-    enter: async (featureId) => {
+    enter: async (featureId, editing) => {
       const user = useAuthStore.getState().user;
       if (!user) return;
       if (!get().active) {
-        set({ ...EMPTY, drafts: new Map(), objects: new Set(), elems: new Map(), active: true, tool: "move" });
+        const e = editing ?? savedEditing();
+        explicitChoice = editing !== undefined;
+        rememberEditing(e);
+        set({ ...EMPTY, drafts: new Map(), objects: new Set(), elems: new Map(), active: true, editing: e, tool: e === "height" ? "height" : "move" });
         // Edit mode owns the screen: other panels close
         useContribStore.getState().setPanel(null);
         useContribStore.getState().closeMenu();
@@ -157,8 +195,20 @@ export const useEditStore = create<EditStore>((set, get) => {
         (document.activeElement as HTMLElement | null)?.blur?.();
         const saved = await loadSaved(user.id);
         if (saved?.drafts.some(isChanged) && get().active) set({ restore: saved });
+      } else if (editing) {
+        explicitChoice = true;
+        get().setEditing(editing);
       }
       if (featureId !== undefined) await get().addBuilding(featureId, false);
+    },
+
+    setEditing: (editing) => {
+      const s = get();
+      if (modalStart) return;
+      rememberEditing(editing);
+      if (editing === s.editing) return;
+      if (editing === "height") set({ editing, mode: "object", tool: "height", elems: new Map(), hint: null });
+      else set({ editing, tool: "move" });
     },
 
     requestExit: () => {
@@ -178,8 +228,7 @@ export const useEditStore = create<EditStore>((set, get) => {
     reopen: async (detail) => {
       if (!get().active) await get().enter();
       if (!get().active) return;
-      merge(draftsOf(detail), detail.id);
-      notify("Your proposal is open: submitting replaces it");
+      if (!merge(draftsOf(detail), detail.id)) notify("Your proposal is open: submitting replaces it");
     },
 
     restoreSaved: (accept) => {
@@ -191,8 +240,8 @@ export const useEditStore = create<EditStore>((set, get) => {
         if (user && !changedDrafts(get()).length) void save(user.id, null);
         return;
       }
-      merge(saved.drafts.filter(isChanged), null);
       set((s) => ({ supersedes: [...new Set([...s.supersedes, ...saved.supersedes])] }));
+      merge(saved.drafts.filter(isChanged), null);
     },
 
     addBuilding: async (featureId, additive) => {
@@ -260,6 +309,7 @@ export const useEditStore = create<EditStore>((set, get) => {
     setMode: (mode) => {
       const s = get();
       if (mode === s.mode || modalStart) return;
+      if (s.editing === "height" && mode !== "object") return; // buildings only: no vertices, edges or faces
       if (mode !== "object") {
         const editable = [...s.objects].filter((id) => !s.drafts.get(id)?.deleted);
         if (!editable.length) return notify("Select a building first");
@@ -275,7 +325,10 @@ export const useEditStore = create<EditStore>((set, get) => {
       const tool = ["extrude", "inset", "bevel", "loopcut", "knife"].includes(s.tool) ? "move" : s.tool;
       set({ mode, tool });
     },
-    setTool: (tool) => set({ tool }),
+    setTool: (tool) => {
+      if (get().editing === "height" && tool !== "height") return;
+      set({ tool });
+    },
     setPivot: (pivot) => set({ pivot }),
     toggleSnap: () => set((s) => ({ snap: !s.snap })),
     setSnapTo: (snapTo) => set({ snapTo, snap: snapTo.length > 0 }),
@@ -349,19 +402,28 @@ export const useEditStore = create<EditStore>((set, get) => {
       drafts.set(draft.id, draft);
       record({ drafts, objects: new Set([draft.id]), activeId: draft.id });
     },
-    setHeight: (id, height) => {
-      const d = get().drafts.get(id);
-      if (!d || !(height > 0)) return;
+    setHeight: (ids, height) => {
+      if (!(height > 0)) return;
       const drafts = new Map(get().drafts);
-      drafts.set(id, { ...d, mesh: withHeight(d.mesh, height) });
-      record({ drafts });
+      let changed = false;
+      for (const id of ids) {
+        const d = drafts.get(id);
+        if (!d || d.deleted) continue;
+        drafts.set(id, { ...d, mesh: withHeight(d.mesh, height) });
+        changed = true;
+      }
+      if (changed) record({ drafts });
     },
-    setLevels: (id, levels) => {
-      const d = get().drafts.get(id);
-      if (!d) return;
+    setLevels: (ids, levels) => {
       const drafts = new Map(get().drafts);
-      drafts.set(id, { ...d, levels });
-      record({ drafts });
+      let changed = false;
+      for (const id of ids) {
+        const d = drafts.get(id);
+        if (!d || d.deleted || d.levels === levels) continue;
+        drafts.set(id, { ...d, levels });
+        changed = true;
+      }
+      if (changed) record({ drafts });
     },
     revert: (id) => {
       const s = get();

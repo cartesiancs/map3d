@@ -1,13 +1,19 @@
-// Edit mode, top center: the selection mode (Object, Vertex, Edge, Face — Tab, 1, 2, 3), snapping
-// (Shift+Tab), the pivot for rotate / scale, undo and redo; under it what the running operation does
-// ("Move · X · 5 m"), and the offer to bring back unsubmitted edits from an earlier visit.
+// Edit mode, top center: Height or Shape editing; in Shape editing the selection mode (Object, Vertex,
+// Edge, Face — Tab, 1, 2, 3), snapping (Shift+Tab) and the pivot for rotate / scale; undo and redo. Under
+// it what the running operation does ("Move · X · 5 m"), and the offer to bring back unsubmitted edits
+// from an earlier visit.
 
 import { css } from "@emotion/react";
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown, Loader2, Magnet, Redo2, Undo2 } from "lucide-react";
-import { Mode, Pivot, useEditStore } from "@/state/editStore";
+import { Editing, Mode, Pivot, useEditStore } from "@/state/editStore";
 import type { SnapTarget } from "@/three/edit/snapping";
 import { UI, iconSize, mobile, panel, pillButton, spin } from "@/components/ui/styles";
+
+const EDITING: [Editing, string, string][] = [
+  ["height", "Height", "Change the height and levels of buildings"],
+  ["shape", "Shape", "Edit the shape: vertices, edges and faces, move, add, remove"],
+];
 
 const MODES: [Mode, string, string][] = [
   ["object", "Object", "Tab"],
@@ -103,6 +109,7 @@ function time(iso: string) {
 
 export function ModeBar() {
   const active = useEditStore((s) => s.active);
+  const editing = useEditStore((s) => s.editing);
   const mode = useEditStore((s) => s.mode);
   const snap = useEditStore((s) => s.snap);
   const pivot = useEditStore((s) => s.pivot);
@@ -117,31 +124,43 @@ export function ModeBar() {
   return (
     <>
       <div role="toolbar" aria-label="Edit mode" css={bar}>
-        <div role="radiogroup" aria-label="Select" css={css({ display: "flex", gap: 2 })}>
-          {MODES.map(([m, label, key]) => (
-            <button key={m} role="radio" aria-checked={mode === m} css={segment(mode === m)} title={`${label} (${key})`} onClick={() => store.setMode(m)}>
+        <div role="radiogroup" aria-label="Editing" css={css({ display: "flex", gap: 2, padding: 2, borderRadius: 16, backgroundColor: UI.control })}>
+          {EDITING.map(([e, label, title]) => (
+            <button key={e} role="radio" aria-checked={editing === e} css={segment(editing === e)} title={title} onClick={() => store.setEditing(e)}>
               {label}
             </button>
           ))}
         </div>
         <span css={css({ width: 1, height: 20, backgroundColor: UI.line })} />
-        <div css={css({ display: "flex", alignItems: "center" })}>
-          <button css={iconButton(snap)} aria-pressed={snap} title="Snap while moving (Shift+Tab; Ctrl: 1 m steps)" aria-label="Snap" onClick={() => store.toggleSnap()}>
-            <Magnet css={iconSize(15)} />
-          </button>
-          <SnapTo />
-        </div>
-        <select
-          aria-label="Pivot"
-          value={pivot}
-          title="Rotate and scale around"
-          onChange={(e) => store.setPivot(e.target.value as Pivot)}
-          css={css({ height: 28, border: "none", borderRadius: 14, backgroundColor: "transparent", color: UI.text, fontSize: 13, fontFamily: "inherit", padding: "0 4px", cursor: "pointer" })}
-        >
-          <option value="median">Median point</option>
-          <option value="individual">Individual origins</option>
-        </select>
-        <span css={css({ width: 1, height: 20, backgroundColor: UI.line })} />
+        {editing === "shape" && (
+          <>
+            <div role="radiogroup" aria-label="Select" css={css({ display: "flex", gap: 2 })}>
+              {MODES.map(([m, label, key]) => (
+                <button key={m} role="radio" aria-checked={mode === m} css={segment(mode === m)} title={`${label} (${key})`} onClick={() => store.setMode(m)}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            <span css={css({ width: 1, height: 20, backgroundColor: UI.line })} />
+            <div css={css({ display: "flex", alignItems: "center" })}>
+              <button css={iconButton(snap)} aria-pressed={snap} title="Snap while moving (Shift+Tab; Ctrl: 1 m steps)" aria-label="Snap" onClick={() => store.toggleSnap()}>
+                <Magnet css={iconSize(15)} />
+              </button>
+              <SnapTo />
+            </div>
+            <select
+              aria-label="Pivot"
+              value={pivot}
+              title="Rotate and scale around"
+              onChange={(e) => store.setPivot(e.target.value as Pivot)}
+              css={css({ height: 28, border: "none", borderRadius: 14, backgroundColor: "transparent", color: UI.text, fontSize: 13, fontFamily: "inherit", padding: "0 4px", cursor: "pointer" })}
+            >
+              <option value="median">Median point</option>
+              <option value="individual">Individual origins</option>
+            </select>
+            <span css={css({ width: 1, height: 20, backgroundColor: UI.line })} />
+          </>
+        )}
         <button css={iconButton()} disabled={!canUndo} title="Undo (Ctrl+Z)" aria-label="Undo" onClick={() => store.undo()}>
           <Undo2 css={iconSize(15)} />
         </button>

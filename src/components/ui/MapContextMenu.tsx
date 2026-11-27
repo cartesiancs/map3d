@@ -6,12 +6,12 @@
 import { css } from "@emotion/react";
 import { useEffect, useRef } from "react";
 import * as Menu from "@radix-ui/react-context-menu";
-import { Box, Copy, Crosshair, ExternalLink, LogIn, LogOut, Pencil, PenTool, Trash2 } from "lucide-react";
+import { ArrowUpFromLine, Box, Copy, Crosshair, ExternalLink, LogIn, LogOut, Pencil, PenTool, Trash2 } from "lucide-react";
 import { MenuTarget, useContribStore } from "@/state/contribStore";
 import { useAuthStore } from "@/state/authStore";
 import { useViewStore } from "@/state/viewStore";
 import { pendingFor, refOf } from "@/api/changesets";
-import { useEditStore } from "@/state/editStore";
+import { Editing, defaultEditing, useEditStore } from "@/state/editStore";
 import * as ops from "@/edit/ops";
 import { selectNonManifold } from "@/edit/ops";
 import type { ElemMode } from "@/edit/select";
@@ -88,10 +88,12 @@ function BuildingItems({ target }: { target: Extract<MenuTarget, { kind: "buildi
   const name = englishName(target.tags);
   const signedIn = status === "signedIn";
 
-  const edit = () => {
+  const edit = (editing: Editing) => () => {
     useContribStore.getState().closeMenu();
-    void useEditStore.getState().enter(target.id);
+    void useEditStore.getState().enter(target.id, editing);
   };
+  // E opens the way of editing used last
+  const usual = defaultEditing();
 
   return (
     <>
@@ -101,10 +103,15 @@ function BuildingItems({ target }: { target: Extract<MenuTarget, { kind: "buildi
         <span css={sub}>{target.id < 0 ? "Added on map3d" : `OSM way ${target.id}`}</span>
       </Menu.Label>
       <Menu.Separator css={separator} />
-      <Menu.Item css={item} disabled={!signedIn} onSelect={edit}>
+      <Menu.Item css={item} disabled={!signedIn} onSelect={edit("height")}>
+        <ArrowUpFromLine css={iconSize(16)} />
+        Edit height
+        {usual === "height" && <span css={shortcut}>E</span>}
+      </Menu.Item>
+      <Menu.Item css={item} disabled={!signedIn} onSelect={edit("shape")}>
         <Pencil css={iconSize(16)} />
-        {pending ? "Edit my proposal" : "Edit"}
-        <span css={shortcut}>E</span>
+        Edit shape
+        {usual === "shape" && <span css={shortcut}>E</span>}
       </Menu.Item>
       <Menu.Item css={item} onSelect={() => copy(coords(target.lat, target.lng))}>
         <Copy css={iconSize(16)} /> Copy coordinates
@@ -128,6 +135,7 @@ function BuildingItems({ target }: { target: Extract<MenuTarget, { kind: "buildi
 
 /** Edit mode: what can be done with the selection (by mode), adding buildings, views */
 function EditItems({ target }: { target: Extract<MenuTarget, { kind: "edit" }> }) {
+  const editing = useEditStore((s) => s.editing);
   const mode = useEditStore((s) => s.mode);
   const count = useEditStore((s) => (s.mode === "object" ? s.objects.size : [...s.elems.values()].reduce((n, e) => n + e.verts.size, 0)));
   const s = useEditStore.getState();
@@ -139,6 +147,26 @@ function EditItems({ target }: { target: Extract<MenuTarget, { kind: "edit" }> }
       <span css={shortcut}>{key}</span>
     </Menu.Item>
   );
+  if (editing === "height")
+    return (
+      <>
+        <Menu.Label css={label}>
+          Height editing
+          <span css={sub}>{`${count} ${count === 1 ? "building" : "buildings"} selected`}</span>
+        </Menu.Label>
+        <Menu.Separator css={separator} />
+        {entry("Change height", "G", run("height"))}
+        {entry("Select all", "A", () => s.selectAll(), false)}
+        {entry("Frame selected", "Num .", run("frame"))}
+        <Menu.Separator css={separator} />
+        <Menu.Item css={item} onSelect={() => s.setEditing("shape")}>
+          <Pencil css={iconSize(16)} /> Edit shape instead
+        </Menu.Item>
+        <Menu.Item css={item} onSelect={() => s.requestExit()}>
+          <LogOut css={iconSize(16)} /> Exit Edit mode
+        </Menu.Item>
+      </>
+    );
   return (
     <>
       <Menu.Label css={label}>

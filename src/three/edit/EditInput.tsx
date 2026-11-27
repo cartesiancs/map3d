@@ -485,11 +485,12 @@ export function EditInput() {
       }
       if (ctrl && k === "y") return s.redo(), true;
       if (e.key === "Tab") {
+        if (s.editing === "height") return true; // nothing to switch (and not the page's focus either)
         if (e.shiftKey) s.toggleSnap();
         else s.setMode(s.mode === "object" ? lastElemMode : "object");
         return true;
       }
-      if (!ctrl && !e.altKey && (k === "1" || k === "2" || k === "3") && !e.code.startsWith("Numpad")) {
+      if (s.editing === "shape" && !ctrl && !e.altKey && (k === "1" || k === "2" || k === "3") && !e.code.startsWith("Numpad")) {
         const m = ({ "1": "vertex", "2": "edge", "3": "face" } as const)[k];
         lastElemMode = m;
         s.setMode(m);
@@ -501,6 +502,23 @@ export function EditInput() {
       if (e.code === "Numpad3") return useViewStore.getState().view(ctrl ? "left" : "right"), true;
       if (e.code === "NumpadDecimal" || (e.key === "." && !mode)) return frameSelected(), true;
       if (e.key === "Home") return frameAll(), true;
+
+      // Height editing: pick buildings and change their height, nothing else
+      if (s.editing === "height") {
+        if (k === "g" && !ctrl && !e.altKey && !e.shiftKey) return startModal("height", lastMouse), true;
+        if (k === "a" && !ctrl && !e.shiftKey) {
+          if (e.altKey) s.deselectAll();
+          else s.selectAll();
+          return true;
+        }
+        if (k === "b" && !ctrl) return (boxArmed = true), true;
+        if (e.key === "Escape") {
+          if (s.objects.size) s.deselectAll();
+          else s.requestExit();
+          return true;
+        }
+        return false;
+      }
 
       if (!ctrl && !e.altKey && (k === "g" || k === "r" || k === "s") && !e.shiftKey) {
         startModal(k === "g" ? "move" : k === "r" ? "rotate" : "scale", lastMouse);
@@ -638,6 +656,18 @@ export function EditInput() {
       invalidate();
     };
 
+    // switching between Height and Shape editing ends what was under way
+    const offEditing = useEditStore.subscribe((st, prev) => {
+      if (st.editing === prev.editing) return;
+      if (modal) endModal(false);
+      tool?.cancel();
+      tool = null;
+      drawPoints.length = 0;
+      editLayer.setDrawPreview(null);
+      boxArmed = false;
+      invalidate();
+    });
+
     parent.addEventListener("pointerdown", onDown, true);
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
@@ -645,6 +675,7 @@ export function EditInput() {
     parent.addEventListener("wheel", onWheel, { capture: true, passive: false });
     window.addEventListener("map3d-edit", onEditAction);
     return () => {
+      offEditing();
       parent.removeEventListener("pointerdown", onDown, true);
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);

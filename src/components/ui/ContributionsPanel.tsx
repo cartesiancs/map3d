@@ -257,7 +257,7 @@ function MyContributions() {
   };
 
   if (!mine.length) {
-    return <p css={[small, css({ marginTop: 16, lineHeight: 1.5 })]}>Nothing yet. Right-click a building and choose “Edit” to suggest a change.</p>;
+    return <p css={[small, css({ marginTop: 16, lineHeight: 1.5 })]}>Nothing yet. Right-click a building and choose “Edit height” or “Edit shape” to suggest a change.</p>;
   }
   return (
     <div>
