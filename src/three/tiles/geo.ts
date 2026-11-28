@@ -58,7 +58,10 @@ export function tileYfToLat(y: number, z: number) {
 
 /** meters per degree of latitude (the sphere of src/contrib/validate.ts) */
 export const M_PER_DEG = (Math.PI * 6371008.8) / 180;
-/** meters per HORIZONTAL scene unit (≈ 2.18). Vertical scene units are meters: heights are drawn unscaled. */
+/**
+ * meters per HORIZONTAL scene unit (≈ 2.18). Building heights are drawn in meters (1 vertical unit = 1 m, the
+ * map's vertical exaggeration); the terrain is drawn at true scale (elevation ÷ H_UNIT_M, see terrain.ts).
+ */
 export const H_UNIT_M = M_PER_DEG / SCALE;
 
 /**

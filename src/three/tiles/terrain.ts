@@ -2,13 +2,15 @@
 // - elevation: Terrain Tiles on AWS, Terrarium encoding  h = R·256 + G + B/256 − 32768 (meters)
 // (the ground map drawn on it is the land / sea SDF of water.ts)
 // - heights are clamped to sea level, so the sea is flat and land below sea level stays dry
+// - drawn at true scale: meters are converted to horizontal scene units (÷ H_UNIT_M ≈ 2.18), unlike buildings,
+//   which keep the map's vertical exaggeration (1 unit = 1 m, see geo.ts)
 // Unlike earth-shader (a globe in ECEF via 3d-tiles-renderer), map3d draws a local flat scene, so the meshes are
 // built here, in scene coordinates, one per z13 tile. Runs in the tile worker.
 //
 // The same function (sampleGrid) gives the height of the rendered mesh anywhere: it interpolates on exactly
 // the triangles the mesh uses. Buildings, roads and the camera use it, so nothing floats or sinks.
 
-import { Origin, fromScene, latToTileYf, lngToTileXf, tileXfToLng, tileYfToLat, toScene } from "./geo";
+import { H_UNIT_M, Origin, fromScene, latToTileYf, lngToTileXf, tileXfToLng, tileYfToLat, toScene } from "./geo";
 import { fetchBytes } from "@/api/retry";
 import { decodePng } from "./png";
 
@@ -23,7 +25,10 @@ const PX = 256;
 export const ELEVATION_URL = (z: number, x: number, y: number) =>
   `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${x}/${y}.png`;
 
-/** Heights (meters = scene units, like building heights) at the (GRID+1)² mesh vertices, rows from north. */
+/**
+ * Heights in scene units at the (GRID+1)² mesh vertices, rows from north. True scale: elevation meters ÷ H_UNIT_M,
+ * the same unit as x and z (building heights are not: they stay in meters, exaggerated).
+ */
 export type TerrainGrid = { x: number; y: number; heights: Float32Array };
 
 export type GroundTileData = {
@@ -56,7 +61,7 @@ export async function fetchElevation(x: number, y: number) {
 }
 
 /**
- * Mesh vertex heights: bilinear between pixel centers, clamped to sea level.
+ * Mesh vertex heights: bilinear between pixel centers, clamped to sea level, in scene units (true scale).
  * `neighbours[dy+1][dx+1]` are the elevation tiles around (x, y) (null if missing). A vertex on a tile edge
  * sits between the last pixel of one tile and the first of the next; reading both makes neighbouring tiles
  * compute the very same edge heights, so the ground has no steps or cracks at tile seams.
@@ -82,7 +87,7 @@ export function gridFromElevation(neighbours: (Float32Array | null)[][], x: numb
       const fx = sx - x0;
       const top = E(x0, y0) * (1 - fx) + E(x0 + 1, y0) * fx;
       const bottom = E(x0, y0 + 1) * (1 - fx) + E(x0 + 1, y0 + 1) * fx;
-      heights[j * W + i] = Math.max(0, top * (1 - fy) + bottom * fy);
+      heights[j * W + i] = Math.max(0, top * (1 - fy) + bottom * fy) / H_UNIT_M;
     }
   }
   return { x, y, heights };
